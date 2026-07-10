@@ -18,6 +18,7 @@
     "plugins/codex/scripts/lib/fs.mjs",
     "plugins/codex/scripts/lib/process.mjs",
     "plugins/codex/scripts/lib/app-server-protocol.d.ts",
-    "plugins/codex/.generated/app-server-types/**/*.ts"
+    "plugins/codex/.generated/app-server-types/**/*.ts",
+    "plugins/grok/scripts/**/*.mjs"
   ]
 }

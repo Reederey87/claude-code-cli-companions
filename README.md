@@ -1,47 +1,67 @@
-# Codex plugin for Claude Code
+# Coding CLI Companions for Claude Code
 
-Use Codex from inside Claude Code for code reviews or to delegate tasks to Codex.
+Use Codex and Grok Build from inside Claude Code for code reviews, delegated tasks, and second-opinion analysis.
 
-This plugin is for Claude Code users who want an easy way to start using Codex from the workflow
-they already have.
+This repository packages two Claude Code plugins that wrap local coding CLIs:
+
+- **Codex** (`/codex:*`) delegates to the [OpenAI Codex CLI](https://developers.openai.com/codex/cli/) for reviews, rescue tasks, and session transfer.
+- **Grok** (`/grok:*`) delegates to the [xAI Grok Build CLI](https://docs.x.ai/build) for read-only questions, reviews, and rescue tasks.
 
 <video src="./docs/plugin-demo.webm" controls muted playsinline autoplay></video>
 
 ## What You Get
 
+### Codex
+
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
 - `/codex:rescue`, `/codex:transfer`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work, hand off sessions, and manage background jobs
 
+### Grok
+
+- `/grok:setup` to check Grok Build CLI availability and auth
+- `/grok:ask` for a read-only repository question
+- `/grok:review` for a read-only Grok Build review of local git changes
+- `/grok:rescue` for diagnosis, planning, or implementation with explicit write mode
+- `/grok:status`, `/grok:result`, and `/grok:cancel` to manage background jobs
+
 ## Requirements
+
+### Codex
 
 - **ChatGPT subscription (incl. Free) or OpenAI API key.**
   - Usage will contribute to your Codex usage limits. [Learn more](https://developers.openai.com/codex/pricing).
+- **Node.js 18.18 or later**
+
+### Grok
+
+- **Grok Build CLI installed and authenticated** (`grok login`).
+  - A Grok subscription or `XAI_API_KEY` environment variable is required. [Learn more](https://docs.x.ai/build).
 - **Node.js 18.18 or later**
 
 ## Install
 
 Add the marketplace in Claude Code:
 
-```bash
+```text
 /plugin marketplace add openai/codex-plugin-cc
 ```
 
-Install the plugin:
+Install the plugins you need:
 
-```bash
+```text
 /plugin install codex@openai-codex
 ```
 
 Reload plugins:
 
-```bash
+```text
 /reload-plugins
 ```
 
 Then run:
 
-```bash
+```text
 /codex:setup
 ```
 
@@ -58,6 +78,41 @@ If Codex is installed but not logged in yet, run:
 ```bash
 !codex login
 ```
+
+### Installing both Codex and Grok from this fork
+
+If you want to use both plugins from this repository's marketplace (`coding-cli-companions`):
+
+```text
+/plugin marketplace add openai/codex-plugin-cc
+/plugin install codex@openai-codex
+```
+
+Or, if you are testing from a local checkout:
+
+```text
+/plugin marketplace add /path/to/codex-plugin-cc
+/plugin install codex@coding-cli-companions
+/plugin install grok@coding-cli-companions
+```
+
+> [!NOTE]
+> Do not install the fork's `codex` plugin alongside the official Codex plugin, because both use the `codex` plugin name. The Grok plugin uses the separate `/grok:*` namespace and does not conflict.
+
+After installing the Grok plugin, run:
+
+```text
+/grok:setup
+```
+
+If Grok is not installed yet, use the [official installer](https://docs.x.ai/build):
+
+```bash
+curl -fsSL https://x.ai/cli/install.sh | bash
+grok login
+```
+
+For headless or remote hosts, use `grok login --device-auth`.
 
 After install, you should see:
 
@@ -236,6 +291,80 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 > [!WARNING]
 > The review gate can create a long-running Claude/Codex loop and may drain usage limits quickly. Only enable it when you plan to actively monitor the session.
 
+## Grok Commands
+
+### `/grok:setup`
+
+Checks whether the local Grok Build CLI is installed and authenticated.
+
+```text
+/grok:setup
+```
+
+### `/grok:ask`
+
+Asks the Grok Build CLI a read-only question about the current repository. Runs with `--sandbox read-only` and `--permission-mode dontAsk`.
+
+```text
+/grok:ask Explain the architecture of this repo and identify risky areas.
+```
+
+### `/grok:review`
+
+Runs a read-only Grok Build review of local git changes. Supports `--base <ref>` for branch comparison, `--scope working-tree|branch|repo`, `--background`, and `--model`.
+
+```text
+/grok:review
+/grok:review --base main
+/grok:review --scope branch --base main --background
+```
+
+This command is read-only and will not modify files.
+
+### `/grok:rescue`
+
+Delegates a diagnosis, planning, or implementation task to the Grok Build CLI.
+
+- Without `--write`: read-only diagnosis or plan.
+- With `--write --always-approve`: Grok may edit files in the current Git workspace. All headless writes require explicit `--always-approve` or `--yolo`.
+- Supports `--background`, `--wait`, `--resume`, `--fresh`, and `--model`.
+
+```text
+/grok:rescue investigate why tests fail and propose the smallest safe patch
+/grok:rescue --write --always-approve fix the failing test with the smallest safe patch
+/grok:rescue --write --yolo --background implement the typed config parser and run tests
+```
+
+> [!NOTE]
+> Write mode requires a Git repository and explicit `--always-approve`. The plugin captures `git diff --name-only HEAD` before and after writes and reports changed files.
+
+### `/grok:status`
+
+Shows active and recent Grok jobs for the current repository.
+
+```text
+/grok:status
+/grok:status grok-task-abc123
+```
+
+### `/grok:result`
+
+Shows the stored final output for a finished Grok job.
+
+```text
+/grok:result
+/grok:result grok-task-abc123
+```
+
+### `/grok:cancel`
+
+Cancels an active background Grok job. Without a job-id, cancels the latest active job in the current Claude session. With an explicit job-id, cancels that job across sessions.
+
+```text
+/grok:cancel
+/grok:cancel grok-task-abc123
+```
+
 ## Typical Flows
 
 ### Review Before Shipping
@@ -262,6 +391,22 @@ Then check in with:
 ```bash
 /codex:status
 /codex:result
+```
+
+### Grok Second-Opinion Review
+
+```text
+/grok:review --background
+/grok:status
+/grok:result
+```
+
+### Grok Low-Cost Implementation
+
+```text
+/grok:rescue --write --always-approve implement the typed config parser
+/grok:status
+/grok:result
 ```
 
 ## Codex Integration
@@ -291,6 +436,34 @@ Delegated tasks and any [stop gate](#what-does-the-review-gate-do) run can also 
 
 This way you can review the Codex work or continue the work there.
 
+## Grok Build Integration
+
+The Grok plugin wraps the [Grok Build CLI](https://docs.x.ai/build). It invokes the local `grok` binary in headless mode (`grok -p`) with read-only or workspace-write sandbox profiles.
+
+### How It Works
+
+- **Read-only commands** (`ask`, `review`, read-only `rescue`) use `--sandbox read-only --permission-mode dontAsk` with explicit allow/deny rules for read operations and secret-path protection.
+- **Write commands** (`rescue --write --always-approve`) use `--sandbox workspace --permission-mode acceptEdits` with secret-path and destructive-Git deny rules. The plugin captures Git status before and after writes.
+- **Background jobs** run as detached workers with persisted state under `${CLAUDE_PLUGIN_DATA}`. Session lifecycle hooks clean up active jobs when the Claude session ends.
+- **Session resume** generates a UUID for each fresh task and passes it via `--session-id`. Resuming a task reuses the stored session ID with `--resume`.
+
+### Configuration
+
+The Grok plugin exposes two user-config options in the plugin manifest:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `default_model` | `grok-4.5` | Model passed to `grok -m` when `--model` is not specified |
+| `api_fallback_enabled` | `false` | Reserved for a future read-only xAI API fallback |
+
+Model resolution order: explicit `--model` flag, then `CLAUDE_PLUGIN_OPTION_DEFAULT_MODEL`, then the Grok CLI default.
+
+### What Is Not Yet Implemented
+
+- `/grok:adversarial-review` - use `/grok:review` with a challenging prompt for now
+- `/grok:transfer` - session transfer from Claude Code to Grok Build
+- API fallback via `XAI_API_KEY` when the local CLI is unavailable
+
 ## FAQ
 
 ### Do I need a separate Codex account for this plugin?
@@ -318,3 +491,24 @@ Yes. If you already use Codex, the plugin picks up the same [configuration](#com
 Yes. Because the plugin uses your local Codex CLI, your existing sign-in method and config still apply.
 
 If you need to point the built-in OpenAI provider at a different endpoint, set `openai_base_url` in your [Codex config](https://developers.openai.com/codex/config-advanced/#config-and-state-locations).
+
+### Do I need a separate Grok account for the Grok plugin?
+
+If you are already signed into Grok Build on this machine (`grok login`), that authentication works immediately. The plugin uses your local Grok CLI subscription auth, not a separate API key.
+
+If you have not used Grok Build yet, install it and log in:
+
+```bash
+curl -fsSL https://x.ai/cli/install.sh | bash
+grok login
+```
+
+For headless or remote hosts, use `grok login --device-auth`. Run `/grok:setup` to verify.
+
+### Can I use both Codex and Grok plugins at the same time?
+
+Yes. The Codex plugin uses the `/codex:*` namespace and the Grok plugin uses `/grok:*`. They do not conflict. Install both from the same marketplace if you want to use them together.
+
+### Does the Grok plugin use a separate Grok runtime?
+
+No. The plugin invokes your local `grok` binary in headless mode (`grok -p`) on the same machine. It uses the same authentication, configuration, and repository checkout you would use directly.

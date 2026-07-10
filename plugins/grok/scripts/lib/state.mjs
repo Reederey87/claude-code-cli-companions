@@ -1,0 +1,257 @@
+import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { isProcessAlive } from "./process.mjs";
+import { resolveWorkspace } from "./workspace.mjs";
+
+const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+const FALLBACK_ROOT = path.join(os.tmpdir(), "grok-companion");
+const JOB_ID_PATTERN = /^grok-(?:ask|review|task)-[a-z0-9-]+$/;
+const WRITE_LOCK_NAME = "write.lock";
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function workspaceHash(workspaceRoot) {
+  return createHash("sha256").update(workspaceRoot).digest("hex").slice(0, 32);
+}
+
+function stateRoot() {
+  return process.env[PLUGIN_DATA_ENV] || FALLBACK_ROOT;
+}
+
+function assertJobId(jobId) {
+  if (!JOB_ID_PATTERN.test(jobId)) {
+    throw new Error(`Invalid Grok job id: ${jobId}`);
+  }
+}
+
+export function resolveJobsDir(cwd) {
+  const workspaceRoot = resolveWorkspace(cwd);
+  return path.join(stateRoot(), "jobs", workspaceHash(workspaceRoot));
+}
+
+export function resolveJobFile(cwd, jobId) {
+  assertJobId(jobId);
+  return path.join(resolveJobsDir(cwd), `${jobId}.json`);
+}
+
+export function resolveJobLogFile(cwd, jobId) {
+  assertJobId(jobId);
+  return path.join(resolveJobsDir(cwd), `${jobId}.log`);
+}
+
+export function resolveWriteLockDir(cwd) {
+  return path.join(resolveJobsDir(cwd), WRITE_LOCK_NAME);
+}
+
+export function createJob(kind, cwd, fields = {}) {
+  const workspaceRoot = resolveWorkspace(cwd);
+  const createdAt = nowIso();
+  return {
+    id: `grok-${kind}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
+    kind,
+    workspaceRoot,
+    status: "queued",
+    createdAt,
+    updatedAt: createdAt,
+    ...fields
+  };
+}
+
+export function writeJob(cwd, job) {
+  assertJobId(job.id);
+  const jobsDir = resolveJobsDir(cwd);
+  fs.mkdirSync(jobsDir, { recursive: true });
+  const filePath = resolveJobFile(cwd, job.id);
+  const next = { ...job, updatedAt: nowIso() };
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  fs.renameSync(temporaryPath, filePath);
+  return next;
+}
+
+export function readJob(cwd, jobId) {
+  const filePath = resolveJobFile(cwd, jobId);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+export function isActiveJob(job) {
+  return Boolean(job) && (job.status === "queued" || job.status === "running");
+}
+
+export function compareAndSwapJobState(cwd, jobId, expectedStatus, nextJob) {
+  const current = readJob(cwd, jobId);
+  if (!current || current.status !== expectedStatus) {
+    return { success: false, job: current ?? null };
+  }
+  const writeToken = randomUUID();
+  const candidate = { ...nextJob, writeToken };
+  const written = writeJob(cwd, candidate);
+  const verified = readJob(cwd, jobId);
+  if (!verified || verified.writeToken !== writeToken) {
+    return { success: false, job: verified ?? written };
+  }
+  return { success: true, job: verified };
+}
+
+export function listJobs(cwd) {
+  const jobsDir = resolveJobsDir(cwd);
+  if (!fs.existsSync(jobsDir)) {
+    return [];
+  }
+  return fs
+    .readdirSync(jobsDir)
+    .filter((entry) => entry.endsWith(".json"))
+    .flatMap((entry) => {
+      try {
+        return [JSON.parse(fs.readFileSync(path.join(jobsDir, entry), "utf8"))];
+      } catch {
+        return [];
+      }
+    })
+    .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+}
+
+export function resolveJobReference(cwd, reference, options = {}) {
+  const jobs = listJobs(cwd).filter(
+    (job) =>
+      (!options.finishedOnly || (job.status !== "queued" && job.status !== "running")) &&
+      (reference || !options.sessionId || job.claudeSessionId === options.sessionId)
+  );
+  if (!reference) {
+    return jobs[0] ?? null;
+  }
+  const matches = jobs.filter((job) => job.id === reference || job.id.startsWith(reference));
+  if (matches.length === 1) {
+    return matches[0];
+  }
+  if (matches.length > 1) {
+    throw new Error(`Job reference "${reference}" is ambiguous. Use a longer job id.`);
+  }
+  return null;
+}
+
+export function appendJobLog(cwd, jobId, message) {
+  const logFile = resolveJobLogFile(cwd, jobId);
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  fs.appendFileSync(logFile, `[${nowIso()}] ${String(message).trimEnd()}\n`, "utf8");
+  return logFile;
+}
+
+export function acquireWriteLock(cwd, jobId) {
+  const lockDir = resolveWriteLockDir(cwd);
+  const ownerPath = path.join(lockDir, "owner.json");
+  fs.mkdirSync(path.dirname(lockDir), { recursive: true });
+  let created = false;
+  try {
+    fs.mkdirSync(lockDir);
+    created = true;
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) {
+      throw error;
+    }
+    let owner = null;
+    try {
+      owner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+    } catch {
+      owner = null;
+    }
+    if (!owner || !owner.jobId) {
+      throw new Error(
+        "A stale Grok write lock exists for this workspace but has no owner record. Remove the lock directory manually and retry."
+      );
+    }
+    const owningJob = readJob(cwd, owner.jobId);
+    let reclaim = false;
+    if (!owningJob) {
+      reclaim = true;
+    } else if (owningJob.status !== "queued" && owningJob.status !== "running") {
+      reclaim = true;
+    } else if (typeof owningJob.grokPid === "number" && Number.isFinite(owningJob.grokPid)) {
+      if (!isProcessAlive(owningJob.grokPid)) {
+        reclaim = true;
+      } else {
+        throw new Error(`A Grok write task is already active for this workspace (${owner.jobId}).`);
+      }
+    } else if (typeof owningJob.pid === "number" && Number.isFinite(owningJob.pid)) {
+      if (!isProcessAlive(owningJob.pid)) {
+        reclaim = true;
+      } else {
+        throw new Error(`A Grok write task is already active for this workspace (${owner.jobId}).`);
+      }
+    } else {
+      throw new Error(`A Grok write task is already active for this workspace (${owner.jobId}).`);
+    }
+    if (reclaim) {
+      try {
+        fs.unlinkSync(ownerPath);
+      } catch {
+        // Best effort: the owner record may already be gone.
+      }
+      try {
+        fs.rmdirSync(lockDir);
+      } catch {
+        // Best effort: another reclaimer may have removed the directory.
+      }
+      try {
+        fs.mkdirSync(lockDir);
+        created = true;
+      } catch (reclaimError) {
+        if (
+          reclaimError &&
+          typeof reclaimError === "object" &&
+          "code" in reclaimError &&
+          reclaimError.code === "EEXIST"
+        ) {
+          throw new Error(
+            "A stale Grok write lock exists for this workspace but could not be reclaimed. Remove the lock directory manually and retry."
+          );
+        }
+        throw reclaimError;
+      }
+    }
+  }
+  if (!created) {
+    // Should be unreachable; guard against silent state corruption.
+    throw new Error("A Grok write task is already active for this workspace.");
+  }
+  try {
+    fs.writeFileSync(ownerPath, `${JSON.stringify({ jobId, pid: process.pid })}\n`, "utf8");
+  } catch (error) {
+    try {
+      fs.rmdirSync(lockDir);
+    } catch {
+      // Best effort cleanup after a failed lock acquisition.
+    }
+    throw error;
+  }
+}
+
+export function releaseWriteLock(cwd, jobId) {
+  const lockDir = resolveWriteLockDir(cwd);
+  const ownerPath = path.join(lockDir, "owner.json");
+  if (!fs.existsSync(lockDir)) {
+    return;
+  }
+  try {
+    const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+    if (owner.jobId !== jobId) {
+      return;
+    }
+  } catch {
+    return;
+  }
+  try {
+    fs.unlinkSync(ownerPath);
+    fs.rmdirSync(lockDir);
+  } catch {
+    // Session cleanup and worker teardown must not fail on an already-released lock.
+  }
+}

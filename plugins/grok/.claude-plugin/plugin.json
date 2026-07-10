@@ -1,0 +1,23 @@
+{
+  "name": "grok",
+  "version": "0.1.0",
+  "description": "Use a local Grok Build CLI from Claude Code for questions, reviews, and bounded rescue tasks.",
+  "author": {
+    "name": "External CLI Companions"
+  },
+  "commands": "./commands/",
+  "userConfig": {
+    "default_model": {
+      "type": "string",
+      "title": "Default Grok model",
+      "description": "Model name passed to Grok when a command does not specify --model.",
+      "default": "grok-4.5"
+    },
+    "api_fallback_enabled": {
+      "type": "boolean",
+      "title": "Enable xAI API fallback",
+      "description": "Reserved for a future read-only API fallback. This MVP only invokes the local Grok CLI.",
+      "default": false
+    }
+  }
+}
