@@ -22,12 +22,19 @@ function saveState(state) {
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
 }
 
-if (args[0] === "version" || args[0] === "--version") {
+if (args.includes("version") || args.includes("--version")) {
   console.log("grok 0.2.93 fake");
   process.exit(0);
 }
 
 if (args.includes("inspect")) {
+  const inspectState = loadState();
+  inspectState.calls.push({
+    args,
+    cwd: process.cwd(),
+    active: process.env.GROK_BUILD_COMPANION_ACTIVE || null
+  });
+  saveState(inspectState);
   if (behavior === "inspect-fails") {
     console.error("not authenticated");
     process.exit(1);

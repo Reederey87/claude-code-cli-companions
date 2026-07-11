@@ -103,11 +103,11 @@ export function parseGrokOutput(stdout) {
 }
 
 export function getGrokAvailability(cwd) {
-  return binaryAvailable("grok", ["version"], { cwd });
+  return binaryAvailable("grok", ["--no-auto-update", "version"], { cwd });
 }
 
 export async function getGrokInspect(cwd, options = {}) {
-  return runProcess("grok", ["--cwd", cwd, "inspect", "--json"], {
+  return runProcess("grok", ["--cwd", cwd, "--no-auto-update", "inspect", "--json"], {
     cwd,
     env: options.env ?? process.env
   });
@@ -117,6 +117,7 @@ export function buildReadOnlyGrokArgs({ cwd, prompt, model, sessionId, resumeSes
   const args = [
     "--cwd",
     cwd,
+    "--no-auto-update",
     "-p",
     prompt,
     "--output-format",
@@ -147,6 +148,7 @@ export function buildWriteGrokArgs({ cwd, prompt, model, sessionId, resumeSessio
   const args = [
     "--cwd",
     cwd,
+    "--no-auto-update",
     "-p",
     prompt,
     "--output-format",

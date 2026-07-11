@@ -163,6 +163,9 @@ test("setup checks the local Grok CLI and inspect command", () => {
   assert.equal(report.ready, true);
   assert.equal(report.grok.available, true);
   assert.equal(report.inspect.available, true);
+  const inspectCall = fixture.fake.readState().calls.find((call) => call.args.includes("inspect"));
+  assert.ok(inspectCall, "expected an inspect invocation to be recorded");
+  assert.equal(inspectCall.args.includes("--no-auto-update"), true);
 });
 
 test("ask forwards model selection with explicit, configured, then CLI-default precedence", () => {
@@ -198,11 +201,12 @@ test("read-only commands use Grok sandbox, permission mode, explicit allows, and
   const call = fixture.fake.readState().calls[0];
   assert.equal(call.cwd, fs.realpathSync.native(fixture.workspace));
   assert.equal(call.active, "1");
-  assert.deepEqual(call.args.slice(0, 8), [
+  assert.deepEqual(call.args.slice(0, 9), [
     "--cwd",
     fs.realpathSync.native(fixture.workspace),
+    "--no-auto-update",
     "-p",
-    call.args[3],
+    call.args[4],
     "--output-format",
     "json",
     "--sandbox",
@@ -259,7 +263,7 @@ test("read-only commands use Grok sandbox, permission mode, explicit allows, and
   assert.equal(denies.includes("Bash(git reset *)"), true);
   assert.equal(denies.includes("Bash(git checkout *)"), true);
   assert.equal(denies.includes("Bash(git switch *)"), true);
-  assert.equal(call.args.includes("--no-auto-update"), false);
+  assert.equal(call.args.includes("--no-auto-update"), true);
   assert.match(call.args[call.args.indexOf("-p") + 1], /Do not create, edit, delete/i);
 });
 
@@ -483,6 +487,7 @@ test("write tasks require Git, use documented workspace permissions, and persist
   assert.equal(call.args[call.args.indexOf("--sandbox") + 1], "workspace");
   assert.equal(call.args[call.args.indexOf("--permission-mode") + 1], "acceptEdits");
   assert.equal(call.args.includes("--always-approve"), true);
+  assert.equal(call.args.includes("--no-auto-update"), true);
   const denies = call.args.flatMap((argument, index) => (argument === "--deny" ? [call.args[index + 1]] : []));
   assert.equal(denies.includes("Read(**/*secret*)"), true);
   assert.equal(denies.includes("Grep(**/*secret*)"), true);
