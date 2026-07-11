@@ -64,6 +64,29 @@ export function renderStatus(jobs) {
   return `${lines.join("\n")}\n`;
 }
 
+export function renderCleanupReport(payload) {
+  const lines = ["# Grok Cleanup", ""];
+
+  if (payload.attempted === 0) {
+    lines.push("Nothing to clean up.");
+    if (payload.preservedSessionId) {
+      lines.push("", `Preserved for resume: ${payload.preservedSessionId}`);
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  lines.push(`Attempted: ${payload.attempted}`, "");
+  for (const result of payload.results) {
+    lines.push(`- ${result.sessionId}: ${result.ok ? "ok" : `failed (${result.detail ?? "unknown error"})`}`);
+  }
+
+  if (payload.preservedSessionId) {
+    lines.push("", `Preserved for resume: ${payload.preservedSessionId}`);
+  }
+
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
 export function renderJobResult(job) {
   const lines = [
     `# Grok Result`,

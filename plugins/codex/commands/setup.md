@@ -1,6 +1,6 @@
 ---
 description: Check whether the local Codex CLI is ready and optionally toggle the stop-time review gate
-argument-hint: '[--enable-review-gate|--disable-review-gate]'
+argument-hint: '[--enable-review-gate|--disable-review-gate] [--doctor]'
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---
 
@@ -35,3 +35,4 @@ Output rules:
 - Present the final setup output to the user.
 - If installation was skipped, present the original setup output.
 - If Codex is installed but not authenticated, preserve the guidance to run `!codex login`.
+- If the user asked for diagnostics, or the default report shows `ready: false` / "needs attention", rerun with `--doctor` for the full `codex doctor` breakdown.

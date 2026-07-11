@@ -16,6 +16,7 @@ Forwarding rules:
 - If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep Grok running for a long time, prefer background execution.
 - `--background` and `--wait` are Claude-side execution controls. Strip them before the one companion `task` call.
 - Treat `--model` as a runtime control and do not include it in the task text. Leave model unset unless the user explicitly asks for one, otherwise pass it through with `--model`.
+- Treat `--effort`, `--max-turns`, and `--json-schema` as runtime controls and do not include them in the task text. Leave each unset unless the user explicitly supplies it, otherwise pass it through verbatim with the same flag.
 - Treat `--resume` and `--fresh` as routing controls and do not include them in the task text. Leave them in the forwarded request so the companion handles session routing.
 - Preserve the user's task text as-is apart from stripping control flags.
 - Default to a write-capable Grok run by adding `--write` only for a bounded implementation request with a predefined plan or concrete fix.

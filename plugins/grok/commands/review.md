@@ -1,6 +1,6 @@
 ---
 description: Run a read-only Grok Build review of local git changes
-argument-hint: '[--background] [--base <ref>] [--scope working-tree|branch|repo] [--model <model>]'
+argument-hint: '[--background] [--base <ref>] [--scope working-tree|branch|repo] [--model <model>] [--effort <level>] [--max-turns <n>] [--json-schema <schema>]'
 allowed-tools: Bash(node:*)
 ---
 

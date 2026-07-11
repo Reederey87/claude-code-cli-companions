@@ -1,6 +1,6 @@
 ---
 description: Ask the local Grok Build CLI a read-only question about the current repository
-argument-hint: '[--model <model>] [question]'
+argument-hint: '[--model <model>] [--effort <level>] [--max-turns <n>] [--json-schema <schema>] [question]'
 allowed-tools: Bash(node:*)
 ---
 

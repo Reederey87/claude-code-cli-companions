@@ -9,9 +9,23 @@ import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import { collectReviewContext } from "./lib/git-context.mjs";
-import { getGrokAvailability, getGrokInspect, runReadOnlyGrok, runWriteGrok } from "./lib/grok-cli.mjs";
+import {
+  deleteGrokSession,
+  getGrokAvailability,
+  getGrokInspect,
+  resolveMaxTurns,
+  runReadOnlyGrok,
+  runWriteGrok
+} from "./lib/grok-cli.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
-import { renderGrokResult, renderJobResult, renderSetup, renderStatus, renderWriteSummary } from "./lib/render.mjs";
+import {
+  renderCleanupReport,
+  renderGrokResult,
+  renderJobResult,
+  renderSetup,
+  renderStatus,
+  renderWriteSummary
+} from "./lib/render.mjs";
 import {
   acquireWriteLock,
   appendJobLog,
@@ -39,7 +53,8 @@ function usage() {
     "  node scripts/grok-companion.mjs status [job-id] [--json] [--cwd <dir>]",
     "  node scripts/grok-companion.mjs result [job-id] [--json] [--cwd <dir>]",
     "  node scripts/grok-companion.mjs cancel [job-id] [--json] [--cwd <dir>]",
-    "  node scripts/grok-companion.mjs task-resume-candidate [--json] [--cwd <dir>]"
+    "  node scripts/grok-companion.mjs task-resume-candidate [--json] [--cwd <dir>]",
+    "  node scripts/grok-companion.mjs cleanup [--json] [--cwd <dir>]"
   ].join("\n");
 }
 
@@ -254,6 +269,9 @@ async function runStoredJob(cwd, job) {
           sessionId: running.request.grokSessionId,
           resumeSessionId: running.request.resumeSessionId,
           alwaysApprove: running.request.alwaysApprove,
+          effort: running.request.effort,
+          maxTurns: running.request.maxTurns,
+          jsonSchema: running.request.jsonSchema,
           onPid
         })
       : await runReadOnlyGrok({
@@ -262,6 +280,9 @@ async function runStoredJob(cwd, job) {
           model: running.request.model ?? undefined,
           sessionId: running.request.grokSessionId,
           resumeSessionId: running.request.resumeSessionId,
+          effort: running.request.effort,
+          maxTurns: running.request.maxTurns,
+          jsonSchema: running.request.jsonSchema,
           onPid
         });
     const writeSummary = before ? summarizeWriteChanges(before, captureGitStatus(running.request.cwd)) : null;
@@ -429,24 +450,37 @@ async function handleSetup(argv) {
 
 async function handleAsk(argv) {
   const { options, positionals } = parseCommand(argv, {
-    valueOptions: ["cwd", "model"],
+    valueOptions: ["cwd", "model", "effort", "max-turns", "json-schema"],
     booleanOptions: ["write", "always-approve", "yolo", "json"]
   });
   rejectTaskOnlyWriteFlags(options, "ask");
+  resolveMaxTurns(options["max-turns"], process.env);
   const cwd = resolveCwd(options);
   const prompt = readOnlyPrompt(requirePrompt(positionals, "question"), "answer a repository question");
-  await runForegroundJob(cwd, makeJobRequest("ask", cwd, options.model, prompt, "Read-only question"), options.json);
+  const request = {
+    ...makeJobRequest("ask", cwd, options.model, prompt, "Read-only question"),
+    effort: options.effort,
+    maxTurns: options["max-turns"],
+    jsonSchema: options["json-schema"]
+  };
+  await runForegroundJob(cwd, request, options.json);
 }
 
 async function handleReview(argv) {
   const { options } = parseCommand(argv, {
-    valueOptions: ["cwd", "model", "base", "scope"],
+    valueOptions: ["cwd", "model", "base", "scope", "effort", "max-turns", "json-schema"],
     booleanOptions: ["background", "json", "write", "always-approve", "yolo"]
   });
   rejectTaskOnlyWriteFlags(options, "review");
+  resolveMaxTurns(options["max-turns"], process.env);
   const cwd = resolveCwd(options);
   const context = collectReviewContext(cwd, { base: options.base, scope: options.scope });
-  const request = makeJobRequest("review", context.repoRoot, options.model, reviewPrompt(context), `Review ${context.targetLabel}`);
+  const request = {
+    ...makeJobRequest("review", context.repoRoot, options.model, reviewPrompt(context), `Review ${context.targetLabel}`),
+    effort: options.effort,
+    maxTurns: options["max-turns"],
+    jsonSchema: options["json-schema"]
+  };
   if (options.background) {
     const queued = enqueueBackgroundJob(context.repoRoot, request);
     output(options.json ? queued : `Grok review queued as ${queued.jobId}. Check /grok:status ${queued.jobId} for progress.\n`, options.json);
@@ -457,7 +491,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommand(argv, {
-    valueOptions: ["cwd", "model"],
+    valueOptions: ["cwd", "model", "effort", "max-turns", "json-schema"],
     booleanOptions: ["background", "wait", "resume", "fresh", "json", "write", "always-approve", "yolo"]
   });
   if (options.background && options.wait) {
@@ -466,6 +500,7 @@ async function handleTask(argv) {
   if (options.resume && options.fresh) {
     throw new Error("Choose either --resume or --fresh.");
   }
+  resolveMaxTurns(options["max-turns"], process.env);
   const write = Boolean(options.write);
   const alwaysApprove = Boolean(options["always-approve"] || options.yolo);
   if (alwaysApprove && !write) {
@@ -501,6 +536,9 @@ async function handleTask(argv) {
     ),
     write,
     alwaysApprove,
+    effort: options.effort,
+    maxTurns: options["max-turns"],
+    jsonSchema: options["json-schema"],
     grokSessionId,
     resumeSessionId: candidate?.grokSessionId ?? null,
     jobFields: {
@@ -643,6 +681,39 @@ function handleCancel(argv) {
   output(options.json ? payload : `Grok job ${cancelledJob.id} cancelled.\n`, options.json);
 }
 
+function handleCleanup(argv) {
+  const { options } = parseCommand(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+  const cwd = resolveCwd(options);
+  const jobs = listJobs(cwd);
+  const preserved = findLatestResumableTaskJob(jobs);
+  const preservedSessionId = preserved?.grokSessionId ?? null;
+
+  const terminalSessionIds = [
+    ...new Set(
+      jobs
+        .filter((job) => !isActiveJob(job) && typeof job.grokSessionId === "string" && job.grokSessionId)
+        .map((job) => job.grokSessionId)
+        .filter((sessionId) => sessionId !== preservedSessionId)
+    )
+  ];
+
+  const results = terminalSessionIds.map((sessionId) => {
+    const outcome = deleteGrokSession(cwd, sessionId);
+    return { sessionId, ok: outcome.ok, detail: outcome.detail };
+  });
+
+  const payload = {
+    attempted: results.length,
+    preservedSessionId,
+    results
+  };
+
+  output(options.json ? payload : renderCleanupReport(payload), options.json);
+}
+
 async function main() {
   assertNotRecursive();
   const [command, ...argv] = process.argv.slice(2);
@@ -673,6 +744,9 @@ async function main() {
       break;
     case "task-resume-candidate":
       handleTaskResumeCandidate(argv);
+      break;
+    case "cleanup":
+      handleCleanup(argv);
       break;
     default:
       output(usage());

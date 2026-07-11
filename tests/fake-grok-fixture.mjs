@@ -56,6 +56,10 @@ if (behavior === "failure") {
   process.exit(3);
 }
 
+if (args.includes("sessions")) {
+  process.exit(0);
+}
+
 if (behavior === "write" || behavior === "delayed-write") {
   fs.writeFileSync(path.join(process.cwd(), "grok-write.txt"), "changed by fake Grok\\n", "utf8");
 }

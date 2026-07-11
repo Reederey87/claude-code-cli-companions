@@ -1,6 +1,6 @@
 ---
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the local Grok Build CLI
-argument-hint: '[--background|--wait] [--resume|--fresh] [--write] [--always-approve|--yolo] [--model <model>] [what Grok should investigate, solve, or continue]'
+argument-hint: '[--background|--wait] [--resume|--fresh] [--write] [--always-approve|--yolo] [--model <model>] [--effort <level>] [--max-turns <n>] [--json-schema <schema>] [what Grok should investigate, solve, or continue]'
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
@@ -17,7 +17,7 @@ Execution mode:
 - If the request includes `--wait`, run the `grok:grok-rescue` subagent in the foreground.
 - If neither flag is present, default to foreground.
 - `--background` and `--wait` are execution flags for Claude Code. Do not forward them to `task`, and do not treat them as part of the natural-language task text.
-- `--model` is a runtime-selection flag. Preserve it for the forwarded `task` call, but do not treat it as part of the natural-language task text.
+- `--model`, `--effort`, `--max-turns`, and `--json-schema` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
 - `--resume` and `--fresh` are routing controls. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
 - If the request includes `--resume`, do not ask whether to continue. The user already chose.
 - If the request includes `--fresh`, do not ask whether to continue. The user already chose.

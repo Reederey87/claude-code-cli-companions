@@ -174,6 +174,13 @@ function appendReasoningSection(lines, reasoningSummary) {
   }
 }
 
+function appendFallbackModelNote(lines, fallbackModel) {
+  if (!fallbackModel) {
+    return;
+  }
+  lines.push("", `Note: retried with fallback model \`${fallbackModel}\` after the primary model was rejected.`);
+}
+
 export function renderSetupReport(report) {
   const lines = [
     "# Codex Setup",
@@ -203,6 +210,23 @@ export function renderSetupReport(report) {
     for (const step of report.nextSteps) {
       lines.push(`- ${step}`);
     }
+    lines.push("");
+  }
+
+  if (report.doctor) {
+    lines.push("Doctor:");
+    if (report.doctor.available === false) {
+      lines.push(`- unavailable (${report.doctor.reason})`);
+    } else {
+      lines.push(`- overall status: ${report.doctor.overallStatus}`);
+      if (report.doctor.failingChecks.length > 0) {
+        for (const check of report.doctor.failingChecks) {
+          lines.push(`- [${check.status}] ${check.id} (${check.category}): ${check.summary}`);
+        }
+      } else {
+        lines.push("- all checks ok");
+      }
+    }
   }
 
   return `${lines.join("\n").trimEnd()}\n`;
@@ -222,6 +246,7 @@ export function renderReviewResult(parsedResult, meta) {
       lines.push("", "Raw final message:", "", "```text", parsedResult.rawOutput, "```");
     }
 
+    appendFallbackModelNote(lines, meta.fallbackModel);
     appendReasoningSection(lines, meta.reasoningSummary ?? parsedResult.reasoningSummary);
 
     return `${lines.join("\n").trimEnd()}\n`;
@@ -242,6 +267,7 @@ export function renderReviewResult(parsedResult, meta) {
       lines.push("", "Raw final message:", "", "```text", parsedResult.rawOutput, "```");
     }
 
+    appendFallbackModelNote(lines, meta.fallbackModel);
     appendReasoningSection(lines, meta.reasoningSummary ?? parsedResult.reasoningSummary);
 
     return `${lines.join("\n").trimEnd()}\n`;
@@ -280,6 +306,7 @@ export function renderReviewResult(parsedResult, meta) {
     }
   }
 
+  appendFallbackModelNote(lines, meta.fallbackModel);
   appendReasoningSection(lines, meta.reasoningSummary);
 
   return `${lines.join("\n").trimEnd()}\n`;
@@ -288,6 +315,7 @@ export function renderReviewResult(parsedResult, meta) {
 export function renderNativeReviewResult(result, meta) {
   const stdout = result.stdout.trim();
   const stderr = result.stderr.trim();
+  const error = String(result.error ?? "").trim();
   const lines = [
     `# Codex ${meta.reviewLabel}`,
     "",
@@ -303,10 +331,15 @@ export function renderNativeReviewResult(result, meta) {
     lines.push("Codex review failed.");
   }
 
+  if (error) {
+    lines.push("", "error:", "", "```text", error, "```");
+  }
+
   if (stderr) {
     lines.push("", "stderr:", "", "```text", stderr, "```");
   }
 
+  appendFallbackModelNote(lines, meta.fallbackModel);
   appendReasoningSection(lines, meta.reasoningSummary);
 
   return `${lines.join("\n").trimEnd()}\n`;
@@ -314,12 +347,17 @@ export function renderNativeReviewResult(result, meta) {
 
 export function renderTaskResult(parsedResult, meta) {
   const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
+  const fallbackNote = meta?.fallbackModel
+    ? `\nNote: retried with fallback model \`${meta.fallbackModel}\` after the primary model was rejected.\n`
+    : "";
+
   if (rawOutput) {
-    return rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    const output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    return `${output}${fallbackNote}`;
   }
 
   const message = String(parsedResult?.failureMessage ?? "").trim() || "Codex did not return a final message.";
-  return `${message}\n`;
+  return `${message}\n${fallbackNote}`;
 }
 
 export function renderStatusReport(report) {
@@ -440,6 +478,29 @@ export function renderStoredJobResult(job, storedJob) {
     lines.push("", storedJob.errorMessage);
   } else {
     lines.push("", "No captured result payload was stored for this job.");
+  }
+
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+export function renderCleanupReport(payload) {
+  const lines = ["# Codex Cleanup", ""];
+
+  if (payload.attempted === 0) {
+    lines.push("Nothing to clean up.");
+    if (payload.preservedThreadId) {
+      lines.push("", `Preserved for resume: ${payload.preservedThreadId}`);
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  lines.push(`Action: ${payload.action}`, `Attempted: ${payload.attempted}`, "");
+  for (const result of payload.results) {
+    lines.push(`- ${result.threadId}: ${result.ok ? "ok" : `failed (${result.detail ?? "unknown error"})`}`);
+  }
+
+  if (payload.preservedThreadId) {
+    lines.push("", `Preserved for resume: ${payload.preservedThreadId}`);
   }
 
   return `${lines.join("\n").trimEnd()}\n`;

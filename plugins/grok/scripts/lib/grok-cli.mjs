@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { binaryAvailable, runProcess } from "./process.mjs";
+import { binaryAvailable, runCommand, runProcess } from "./process.mjs";
 
 export const CLI_DEFAULT_MODEL = null;
 
@@ -86,6 +86,39 @@ export function resolveModel(explicitModel, env = process.env) {
   return normalizedModel(explicitModel) ?? normalizedModel(env.CLAUDE_PLUGIN_OPTION_DEFAULT_MODEL) ?? CLI_DEFAULT_MODEL;
 }
 
+function normalizedString(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || null;
+}
+
+export function resolveEffort(explicitEffort, env = process.env) {
+  return normalizedString(explicitEffort) ?? normalizedString(env.CLAUDE_PLUGIN_OPTION_DEFAULT_EFFORT) ?? null;
+}
+
+function parsePositiveInteger(value) {
+  const trimmed = normalizedString(value);
+  if (trimmed === null) {
+    return null;
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+export function resolveMaxTurns(explicitMaxTurns, env = process.env) {
+  if (normalizedString(explicitMaxTurns) !== null) {
+    const parsed = parsePositiveInteger(explicitMaxTurns);
+    if (parsed === undefined) {
+      throw new Error("--max-turns must be a positive integer.");
+    }
+    return parsed;
+  }
+  const parsedEnv = parsePositiveInteger(env.CLAUDE_PLUGIN_OPTION_DEFAULT_MAX_TURNS);
+  return parsedEnv === undefined ? null : parsedEnv;
+}
+
 export function parseGrokOutput(stdout) {
   const rawOutput = String(stdout ?? "").trim();
   if (!rawOutput) {
@@ -106,6 +139,36 @@ export function getGrokAvailability(cwd) {
   return binaryAvailable("grok", ["--no-auto-update", "version"], { cwd });
 }
 
+const CLEANUP_TIMEOUT_MS = 15000;
+
+/**
+ * Deletes a Grok Build headless session left over from a finished companion job.
+ * @param {string} cwd
+ * @param {string} sessionId
+ * @returns {{ ok: boolean, detail: string | null }}
+ */
+export function deleteGrokSession(cwd, sessionId) {
+  try {
+    const result = runCommand("grok", ["--no-auto-update", "sessions", "delete", sessionId], {
+      cwd,
+      timeout: CLEANUP_TIMEOUT_MS
+    });
+    if (result.error) {
+      return { ok: false, detail: result.error.message };
+    }
+    if (result.signal) {
+      return { ok: false, detail: `grok sessions delete timed out (${result.signal}).` };
+    }
+    if (result.status !== 0) {
+      const detail = (result.stderr || "").trim() || (result.stdout || "").trim() || `exit ${result.status}`;
+      return { ok: false, detail };
+    }
+    return { ok: true, detail: null };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function getGrokInspect(cwd, options = {}) {
   return runProcess("grok", ["--cwd", cwd, "--no-auto-update", "inspect", "--json"], {
     cwd,
@@ -113,7 +176,26 @@ export async function getGrokInspect(cwd, options = {}) {
   });
 }
 
-export function buildReadOnlyGrokArgs({ cwd, prompt, model, sessionId, resumeSessionId }) {
+/**
+ * @param {string[]} args
+ * @param {{ effort?: string|null, maxTurns?: number|string|null, jsonSchema?: string|null }} [tuning]
+ */
+function appendCommonTuningArgs(args, { effort, maxTurns, jsonSchema } = {}) {
+  const trimmedEffort = normalizedString(effort);
+  if (trimmedEffort !== null) {
+    args.push("--effort", trimmedEffort);
+  }
+  const trimmedMaxTurns = normalizedString(maxTurns);
+  if (trimmedMaxTurns !== null) {
+    args.push("--max-turns", String(maxTurns).trim());
+  }
+  const trimmedJsonSchema = normalizedString(jsonSchema);
+  if (trimmedJsonSchema !== null) {
+    args.push("--json-schema", trimmedJsonSchema);
+  }
+}
+
+export function buildReadOnlyGrokArgs({ cwd, prompt, model, sessionId, resumeSessionId, effort, maxTurns, jsonSchema }) {
   const args = [
     "--cwd",
     cwd,
@@ -141,10 +223,11 @@ export function buildReadOnlyGrokArgs({ cwd, prompt, model, sessionId, resumeSes
   if (model) {
     args.push("--model", model);
   }
+  appendCommonTuningArgs(args, { effort, maxTurns, jsonSchema });
   return args;
 }
 
-export function buildWriteGrokArgs({ cwd, prompt, model, sessionId, resumeSessionId, alwaysApprove = false }) {
+export function buildWriteGrokArgs({ cwd, prompt, model, sessionId, resumeSessionId, alwaysApprove = false, effort, maxTurns, jsonSchema }) {
   const args = [
     "--cwd",
     cwd,
@@ -175,6 +258,7 @@ export function buildWriteGrokArgs({ cwd, prompt, model, sessionId, resumeSessio
   if (model) {
     args.push("--model", model);
   }
+  appendCommonTuningArgs(args, { effort, maxTurns, jsonSchema });
   return args;
 }
 
@@ -184,14 +268,28 @@ export async function runReadOnlyGrok({
   model,
   sessionId,
   resumeSessionId,
+  effort,
+  maxTurns,
+  jsonSchema,
   env = process.env,
   runProcessImpl = runProcess,
   onPid
 }) {
   const resolvedModel = resolveModel(model, env);
+  const resolvedEffort = resolveEffort(effort, env);
+  const resolvedMaxTurns = resolveMaxTurns(maxTurns, env);
   const result = await runProcessImpl(
     "grok",
-    buildReadOnlyGrokArgs({ cwd, prompt, model: resolvedModel, sessionId, resumeSessionId }),
+    buildReadOnlyGrokArgs({
+      cwd,
+      prompt,
+      model: resolvedModel,
+      sessionId,
+      resumeSessionId,
+      effort: resolvedEffort,
+      maxTurns: resolvedMaxTurns,
+      jsonSchema
+    }),
     {
       cwd,
       detached: true,
@@ -216,11 +314,16 @@ export async function runWriteGrok({
   sessionId,
   resumeSessionId,
   alwaysApprove = false,
+  effort,
+  maxTurns,
+  jsonSchema,
   env = process.env,
   runProcessImpl = runProcess,
   onPid
 }) {
   const resolvedModel = resolveModel(model, env);
+  const resolvedEffort = resolveEffort(effort, env);
+  const resolvedMaxTurns = resolveMaxTurns(maxTurns, env);
   const result = await runProcessImpl(
     "grok",
     buildWriteGrokArgs({
@@ -229,7 +332,10 @@ export async function runWriteGrok({
       model: resolvedModel,
       sessionId,
       resumeSessionId,
-      alwaysApprove
+      alwaysApprove,
+      effort: resolvedEffort,
+      maxTurns: resolvedMaxTurns,
+      jsonSchema
     }),
     {
       cwd,

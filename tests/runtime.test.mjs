@@ -13,6 +13,7 @@ import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 delete process.env.CLAUDE_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_SESSION_ID;
 delete process.env.CODEX_COMPANION_TRANSCRIPT_PATH;
+delete process.env.CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
@@ -138,6 +139,58 @@ test("setup reports not ready when app-server config read fails", () => {
   assert.equal(payload.auth.loggedIn, false);
   assert.equal(payload.auth.source, "app-server");
   assert.match(payload.auth.detail, /config\/read failed for cwd/);
+});
+
+test("setup --doctor surfaces codex doctor failing checks", () => {
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+
+  const result = run("node", [SCRIPT, "setup", "--json", "--doctor"], {
+    cwd: ROOT,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.doctor.available, true);
+  assert.equal(payload.doctor.overallStatus, "fail");
+  assert.equal(payload.doctor.failingChecks.length, 1);
+  assert.equal(payload.doctor.failingChecks[0].id, "auth.mode");
+  assert.ok(!payload.doctor.failingChecks.some((check) => check.id === "runtime.provenance"));
+  assert.ok(payload.nextSteps.some((step) => step.includes("auth.mode") && step.includes("auth mode mismatch")));
+  assert.equal(payload.ready, false, "a failing doctor report must not leave setup marked ready");
+});
+
+test("setup without --doctor does not invoke codex doctor", () => {
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+
+  const result = run("node", [SCRIPT, "setup", "--json"], {
+    cwd: ROOT,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.doctor, undefined);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.doctorInvocations ?? 0, 0);
+});
+
+test("setup --doctor degrades gracefully when codex doctor is an unsupported subcommand", () => {
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "doctor-unsupported");
+
+  const result = run("node", [SCRIPT, "setup", "--json", "--doctor"], {
+    cwd: ROOT,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.doctor.available, false);
+  assert.match(payload.doctor.reason, /doctor/i);
 });
 
 test("review renders a no-findings result from app-server review/start", () => {
@@ -347,6 +400,60 @@ test("task reports the actual Codex auth error when the run is rejected", () => 
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /authentication expired; run codex login/);
+});
+
+test("review surfaces the underlying Codex error instead of a bare failure when no fallback model is configured", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 1;\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 2;\n");
+
+  const env = buildEnv(binDir);
+  delete env.CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL;
+
+  const result = run("node", [SCRIPT, "review"], {
+    cwd: repo,
+    env
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /The 'gpt-5\.6' model is not supported when using Codex with a ChatGPT account\./);
+  assert.doesNotMatch(result.stdout, /^Reviewer failed to output a response/);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.reviewStartCount, 1, "no retry should happen without a configured fallback model");
+});
+
+test("review retries once with the fallback model when Codex rejects the primary model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 1;\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 2;\n");
+
+  const result = run("node", [SCRIPT, "review"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL: "gpt-5.5"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Reviewed uncommitted changes/);
+  assert.match(result.stdout, /fallback model `gpt-5\.5`/);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.reviewStartCount, 2, "exactly one retry should have called review/start a second time");
 });
 
 test("review accepts the quoted raw argument style for built-in base-branch review", () => {
@@ -2260,4 +2367,153 @@ test("setup and status honor --cwd when reading shared session runtime", () => {
   const payload = JSON.parse(setup.stdout);
   assert.equal(payload.sessionRuntime.mode, "shared");
   assert.equal(payload.sessionRuntime.endpoint, "unix:/tmp/fake-broker.sock");
+});
+
+function seedCleanupWorkspace(workspace) {
+  const stateDir = resolveStateDir(workspace);
+  fs.mkdirSync(path.join(stateDir, "jobs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-oldest",
+            status: "completed",
+            title: "Codex Task",
+            jobClass: "task",
+            threadId: "thr_oldest",
+            summary: "Oldest completed task",
+            updatedAt: "2026-01-01T00:00:00.000Z"
+          },
+          {
+            id: "task-newest-resumable",
+            status: "completed",
+            title: "Codex Task",
+            jobClass: "task",
+            threadId: "thr_newest_resumable",
+            summary: "Newest completed task",
+            updatedAt: "2026-01-02T00:00:00.000Z"
+          },
+          {
+            id: "review-completed",
+            status: "completed",
+            title: "Codex Review",
+            jobClass: "review",
+            threadId: "thr_review",
+            summary: "Completed review",
+            updatedAt: "2026-01-01T12:00:00.000Z"
+          },
+          {
+            id: "task-running",
+            status: "running",
+            title: "Codex Task",
+            jobClass: "task",
+            threadId: "thr_running",
+            summary: "Still running task",
+            updatedAt: "2026-01-03T00:00:00.000Z"
+          },
+          {
+            id: "task-no-thread",
+            status: "failed",
+            title: "Codex Task",
+            jobClass: "task",
+            threadId: null,
+            summary: "Failed task without a captured thread",
+            updatedAt: "2026-01-01T06:00:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+}
+
+test("cleanup archives terminal job threads while preserving the newest resumable task thread", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  seedCleanupWorkspace(repo);
+
+  const result = run("node", [SCRIPT, "cleanup", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.action, "archive");
+  assert.equal(payload.preservedThreadId, "thr_newest_resumable");
+  assert.deepEqual(
+    payload.results.map((entry) => entry.threadId).sort(),
+    ["thr_oldest", "thr_review"]
+  );
+  assert.ok(payload.results.every((entry) => entry.ok === true));
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  const archiveCalls = fakeState.cliCalls.filter((call) => call.command === "archive");
+  assert.deepEqual(
+    archiveCalls.map((call) => call.args[1]).sort(),
+    ["thr_oldest", "thr_review"]
+  );
+});
+
+test("cleanup --delete permanently deletes threads with --force", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  seedCleanupWorkspace(repo);
+
+  const result = run("node", [SCRIPT, "cleanup", "--delete", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.action, "delete");
+  assert.equal(payload.preservedThreadId, "thr_newest_resumable");
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  const deleteCalls = fakeState.cliCalls.filter((call) => call.command === "delete");
+  assert.deepEqual(deleteCalls.map((call) => call.args[1]).sort(), ["thr_oldest", "thr_review"]);
+  for (const call of deleteCalls) {
+    assert.equal(call.args.includes("--force"), true);
+  }
+});
+
+test("cleanup reports archive failures but still exits 0", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "cleanup-fails");
+  seedCleanupWorkspace(repo);
+
+  const result = run("node", [SCRIPT, "cleanup", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.attempted, 2);
+  assert.ok(payload.results.every((entry) => entry.ok === false));
+  assert.ok(payload.results.every((entry) => typeof entry.detail === "string" && entry.detail.length > 0));
+});
+
+test("cleanup reports nothing to clean up when there are no terminal jobs", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+
+  const result = run("node", [SCRIPT, "cleanup"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Nothing to clean up\./);
 });

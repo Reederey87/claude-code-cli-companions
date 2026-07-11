@@ -42,7 +42,7 @@ import path from "node:path";
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
-import { binaryAvailable } from "./process.mjs";
+import { binaryAvailable, runCommand } from "./process.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
@@ -883,6 +883,52 @@ async function getCodexAuthStatusFromClient(client, cwd) {
   }
 }
 
+const CLEANUP_TIMEOUT_MS = 15000;
+
+/**
+ * @param {string} cwd
+ * @param {string[]} args
+ * @returns {{ ok: boolean, detail: string | null }}
+ */
+function runCodexCleanupCommand(cwd, args) {
+  try {
+    const result = runCommand("codex", args, { cwd, timeout: CLEANUP_TIMEOUT_MS });
+    if (result.error) {
+      return { ok: false, detail: result.error.message };
+    }
+    if (result.signal) {
+      return { ok: false, detail: `codex ${args[0]} timed out (${result.signal}).` };
+    }
+    if (result.status !== 0) {
+      const detail = (result.stderr || "").trim() || (result.stdout || "").trim() || `exit ${result.status}`;
+      return { ok: false, detail };
+    }
+    return { ok: true, detail: null };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Archives a Codex thread so it no longer lingers as an active session.
+ * @param {string} cwd
+ * @param {string} threadId
+ * @returns {{ ok: boolean, detail: string | null }}
+ */
+export function archiveCodexThread(cwd, threadId) {
+  return runCodexCleanupCommand(cwd, ["archive", threadId]);
+}
+
+/**
+ * Permanently deletes a Codex thread.
+ * @param {string} cwd
+ * @param {string} threadId
+ * @returns {{ ok: boolean, detail: string | null }}
+ */
+export function deleteCodexThread(cwd, threadId) {
+  return runCodexCleanupCommand(cwd, ["delete", threadId, "--force"]);
+}
+
 export function getCodexAvailability(cwd) {
   const versionStatus = binaryAvailable("codex", ["--version"], { cwd });
   if (!versionStatus.available) {
@@ -900,6 +946,62 @@ export function getCodexAvailability(cwd) {
   return {
     available: true,
     detail: `${versionStatus.detail}; advanced runtime available`
+  };
+}
+
+const DOCTOR_TIMEOUT_MS = 60000;
+
+function buildFailingDoctorChecks(checks) {
+  const entries = checks && typeof checks === "object" ? Object.values(checks) : [];
+  return entries
+    .filter((check) => check && typeof check === "object" && check.status !== "ok")
+    .map((check) => ({
+      id: check.id ?? null,
+      category: check.category ?? null,
+      status: check.status ?? null,
+      summary: check.summary ?? null
+    }));
+}
+
+export async function getCodexDoctorReport(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    return { available: false, reason: `Codex CLI is unavailable: ${availability.detail}` };
+  }
+
+  const result = runCommand("codex", ["doctor", "--json"], {
+    cwd,
+    timeout: options.timeoutMs ?? DOCTOR_TIMEOUT_MS
+  });
+
+  if (result.error) {
+    return { available: false, reason: result.error.message };
+  }
+
+  if (result.signal) {
+    return { available: false, reason: `codex doctor timed out (${result.signal}).` };
+  }
+
+  if (result.status !== 0) {
+    const stderrText = (result.stderr || "").trim();
+    if (/unrecognized subcommand|unknown subcommand|unknown command/i.test(stderrText)) {
+      return { available: false, reason: "This Codex CLI version does not support `codex doctor`." };
+    }
+    return { available: false, reason: stderrText || `codex doctor exited with status ${result.status}.` };
+  }
+
+  let report;
+  try {
+    report = JSON.parse(result.stdout);
+  } catch (error) {
+    return { available: false, reason: `codex doctor returned unparseable output: ${error.message}` };
+  }
+
+  return {
+    available: true,
+    overallStatus: report?.overallStatus ?? report?.overall_status ?? "unknown",
+    failingChecks: buildFailingDoctorChecks(report?.checks),
+    raw: report
   };
 }
 
@@ -1214,6 +1316,67 @@ export function parseStructuredOutput(rawOutput, fallback = {}) {
 
 export function readOutputSchema(schemaPath) {
   return readJsonFile(schemaPath);
+}
+
+const FALLBACK_MODEL_ENV = "CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL";
+
+/**
+ * Extracts the human-readable error text from a captured turn error, which may be a
+ * plain string, an object with a `message` field, or a JSON-serialized event string
+ * wrapping either of those (e.g. `{"type":"error","status":400,"error":{"message":"..."}}`).
+ * @param {unknown} error
+ * @returns {string}
+ */
+function extractErrorMessageText(error) {
+  if (error == null) {
+    return "";
+  }
+
+  if (typeof error === "string") {
+    try {
+      const parsed = JSON.parse(error);
+      if (parsed && typeof parsed === "object") {
+        return extractErrorMessageText(parsed) || error;
+      }
+    } catch {
+      // Not JSON; treat as plain text.
+    }
+    return error;
+  }
+
+  if (typeof error === "object") {
+    const record = /** @type {{ message?: unknown, error?: unknown }} */ (error);
+    if (typeof record.message === "string" && record.message) {
+      return extractErrorMessageText(record.message) || record.message;
+    }
+    if (record.error && typeof record.error === "object") {
+      return extractErrorMessageText(record.error);
+    }
+  }
+
+  return "";
+}
+
+/**
+ * True when the captured error indicates the requested model is unsupported for the
+ * active Codex account (e.g. a ChatGPT-account 400 rejecting a given model id).
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isModelUnsupportedError(error) {
+  const messageText = extractErrorMessageText(error);
+  return /model.*(is )?not supported/i.test(messageText);
+}
+
+/**
+ * Resolves the opt-in fallback model from the environment. Returns null when unset,
+ * matching the resolveModel pattern in plugins/grok/scripts/lib/grok-cli.mjs.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string | null}
+ */
+export function resolveFallbackModel(env = process.env) {
+  const raw = typeof env?.[FALLBACK_MODEL_ENV] === "string" ? env[FALLBACK_MODEL_ENV].trim() : "";
+  return raw || null;
 }
 
 export { DEFAULT_CONTINUE_PROMPT, TASK_THREAD_PREFIX };

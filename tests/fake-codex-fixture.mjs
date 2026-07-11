@@ -16,6 +16,7 @@ const readline = require("node:readline");
 	const STATE_PATH = ${JSON.stringify(statePath)};
 	const BEHAVIOR = ${JSON.stringify(behavior)};
 	const interruptibleTurns = new Map();
+	let reviewStartCount = 0;
 
 	function loadState() {
 	  if (!fs.existsSync(STATE_PATH)) {
@@ -267,6 +268,35 @@ if (args[0] === "login" && args[1] === "status") {
 if (args[0] === "login") {
   process.exit(0);
 }
+if (args[0] === "doctor") {
+  const doctorState = loadState();
+  doctorState.doctorInvocations = (doctorState.doctorInvocations || 0) + 1;
+  saveState(doctorState);
+  if (BEHAVIOR === "doctor-unsupported") {
+    console.error("error: unrecognized subcommand 'doctor'");
+    process.exit(2);
+  }
+  console.log(JSON.stringify({
+    schemaVersion: 1,
+    overallStatus: "fail",
+    checks: {
+      "auth.mode": { id: "auth.mode", category: "Configuration", status: "fail", summary: "auth mode mismatch" },
+      "runtime.provenance": { id: "runtime.provenance", category: "Environment", status: "ok", summary: "npm install" }
+    }
+  }));
+  process.exit(0);
+}
+if (args[0] === "archive" || args[0] === "delete") {
+  const cleanupState = loadState();
+  cleanupState.cliCalls = cleanupState.cliCalls || [];
+  cleanupState.cliCalls.push({ command: args[0], args });
+  saveState(cleanupState);
+  if (BEHAVIOR === "cleanup-fails") {
+    console.error("fake cleanup failure");
+    process.exit(1);
+  }
+  process.exit(0);
+}
 if (args[0] !== "app-server") {
   process.exit(1);
 }
@@ -413,6 +443,27 @@ rl.on("line", (line) => {
         }
         const turnId = nextTurnId(state);
         send({ id: message.id, result: { turn: buildTurn(turnId), reviewThreadId: reviewThread.id } });
+        reviewStartCount += 1;
+        state.reviewStartCount = reviewStartCount;
+        saveState(state);
+
+        if (BEHAVIOR === "review-model-error" && reviewStartCount === 1) {
+          send({ method: "turn/started", params: { threadId: reviewThread.id, turn: buildTurn(turnId) } });
+          send({
+            method: "error",
+            params: {
+              threadId: reviewThread.id,
+              turnId,
+              error: {
+                type: "invalid_request_error",
+                message: "The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account."
+              }
+            }
+          });
+          send({ method: "turn/completed", params: { threadId: reviewThread.id, turn: buildTurn(turnId, "failed") } });
+          break;
+        }
+
         emitTurnCompleted(reviewThread.id, turnId, [
           {
             started: { type: "enteredReviewMode", id: turnId, review: "current changes" }

@@ -8,16 +8,21 @@ import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import {
+    archiveCodexThread,
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
+    deleteCodexThread,
     findLatestTaskThread,
     getCodexAuthStatus,
     getCodexAvailability,
+    getCodexDoctorReport,
     getSessionRuntimeStatus,
     importExternalAgentSession,
     interruptAppServerTurn,
+    isModelUnsupportedError,
     parseStructuredOutput,
     readOutputSchema,
+    resolveFallbackModel,
     runAppServerReview,
     runAppServerTurn
   } from "./lib/codex.mjs";
@@ -58,6 +63,7 @@ import {
   renderReviewResult,
   renderStoredJobResult,
   renderCancelReport,
+  renderCleanupReport,
   renderJobStatusReport,
   renderSetupReport,
   renderStatusReport,
@@ -83,7 +89,8 @@ function printUsage() {
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
-      "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
+      "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
+      "  node scripts/codex-companion.mjs cleanup [--delete] [--json]"
     ].join("\n")
   );
 }
@@ -179,7 +186,11 @@ function firstMeaningfulLine(text, fallback) {
   return line ?? fallback;
 }
 
-async function buildSetupReport(cwd, actionsTaken = []) {
+function isDoctorStatusHealthy(overallStatus) {
+  return overallStatus === "ok" || overallStatus === "pass";
+}
+
+async function buildSetupReport(cwd, actionsTaken = [], doctorReport = null) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
   const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
@@ -199,8 +210,19 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     nextSteps.push("Optional: run `/codex:setup --enable-review-gate` to require a fresh review before stop.");
   }
 
-  return {
-    ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
+  const doctorFailed = Boolean(doctorReport?.available) && String(doctorReport.overallStatus).toLowerCase() === "fail";
+  const ready = nodeStatus.available && codexStatus.available && authStatus.loggedIn && !doctorFailed;
+
+  if (doctorReport?.available && !isDoctorStatusHealthy(doctorReport.overallStatus)) {
+    for (const check of doctorReport.failingChecks) {
+      nextSteps.push(`Doctor: ${check.id} — ${check.summary}`);
+    }
+  } else if (!ready && !doctorReport) {
+    nextSteps.push("Run /codex:setup --doctor for full diagnostics.");
+  }
+
+  const report = {
+    ready,
     node: nodeStatus,
     npm: npmStatus,
     codex: codexStatus,
@@ -210,12 +232,18 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     actionsTaken,
     nextSteps
   };
+
+  if (doctorReport) {
+    report.doctor = doctorReport;
+  }
+
+  return report;
 }
 
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "doctor"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
@@ -234,7 +262,9 @@ async function handleSetup(argv) {
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
   }
 
-  const finalReport = await buildSetupReport(cwd, actionsTaken);
+  const doctorReport = options.doctor ? await getCodexDoctorReport(cwd) : null;
+
+  const finalReport = await buildSetupReport(cwd, actionsTaken, doctorReport);
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 
@@ -355,6 +385,17 @@ async function resolveLatestTrackedTaskThread(cwd, options = {}) {
   return findLatestTaskThread(workspaceRoot);
 }
 
+function resolveModelFallbackForError(error, modelUsed) {
+  if (!error || !isModelUnsupportedError(error)) {
+    return null;
+  }
+  const fallback = resolveFallbackModel();
+  if (!fallback || fallback === (modelUsed ?? null)) {
+    return null;
+  }
+  return fallback;
+}
+
 async function executeReviewRun(request) {
   ensureCodexAvailable(request.cwd);
   ensureGitRepository(request.cwd);
@@ -367,11 +408,22 @@ async function executeReviewRun(request) {
   const reviewName = request.reviewName ?? "Review";
   if (reviewName === "Review") {
     const reviewTarget = validateNativeReviewRequest(target, focusText);
-    const result = await runAppServerReview(request.cwd, {
+    let result = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
       onProgress: request.onProgress
     });
+    let fallbackModelUsed = null;
+    const fallbackModel = resolveModelFallbackForError(result.error, request.model);
+    if (fallbackModel) {
+      request.onProgress?.(`Model rejected; retrying with fallback model ${fallbackModel}.`);
+      result = await runAppServerReview(request.cwd, {
+        target: reviewTarget,
+        model: fallbackModel,
+        onProgress: request.onProgress
+      });
+      fallbackModelUsed = fallbackModel;
+    }
     const payload = {
       review: reviewName,
       target,
@@ -381,16 +433,24 @@ async function executeReviewRun(request) {
         status: result.status,
         stderr: result.stderr,
         stdout: result.reviewText,
-        reasoning: result.reasoningSummary
-      }
+        reasoning: result.reasoningSummary,
+        error: result.error?.message ?? null
+      },
+      fallbackModel: fallbackModelUsed
     };
     const rendered = renderNativeReviewResult(
       {
         status: result.status,
         stdout: result.reviewText,
-        stderr: result.stderr
+        stderr: result.stderr,
+        error: result.error?.message ?? null
       },
-      { reviewLabel: reviewName, targetLabel: target.label, reasoningSummary: result.reasoningSummary }
+      {
+        reviewLabel: reviewName,
+        targetLabel: target.label,
+        reasoningSummary: result.reasoningSummary,
+        fallbackModel: fallbackModelUsed
+      }
     );
 
     return {
@@ -399,7 +459,7 @@ async function executeReviewRun(request) {
       turnId: result.turnId,
       payload,
       rendered,
-      summary: firstMeaningfulLine(result.reviewText, `${reviewName} completed.`),
+      summary: firstMeaningfulLine(result.reviewText, result.error?.message ?? `${reviewName} completed.`),
       jobTitle: `Codex ${reviewName}`,
       jobClass: "review",
       targetLabel: target.label
@@ -408,13 +468,21 @@ async function executeReviewRun(request) {
 
   const context = collectReviewContext(request.cwd, target);
   const prompt = buildAdversarialReviewPrompt(context, focusText);
-  const result = await runAppServerTurn(context.repoRoot, {
+  const turnOptions = {
     prompt,
     model: request.model,
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
-  });
+  };
+  let result = await runAppServerTurn(context.repoRoot, turnOptions);
+  let fallbackModelUsed = null;
+  const fallbackModel = resolveModelFallbackForError(result.error, request.model);
+  if (fallbackModel) {
+    request.onProgress?.(`Model rejected; retrying with fallback model ${fallbackModel}.`);
+    result = await runAppServerTurn(context.repoRoot, { ...turnOptions, model: fallbackModel });
+    fallbackModelUsed = fallbackModel;
+  }
   const parsed = parseStructuredOutput(result.finalMessage, {
     status: result.status,
     failureMessage: result.error?.message ?? result.stderr
@@ -432,12 +500,14 @@ async function executeReviewRun(request) {
       status: result.status,
       stderr: result.stderr,
       stdout: result.finalMessage,
-      reasoning: result.reasoningSummary
+      reasoning: result.reasoningSummary,
+      error: result.error?.message ?? null
     },
     result: parsed.parsed,
     rawOutput: parsed.rawOutput,
     parseError: parsed.parseError,
-    reasoningSummary: result.reasoningSummary
+    reasoningSummary: result.reasoningSummary,
+    fallbackModel: fallbackModelUsed
   };
 
   return {
@@ -448,7 +518,8 @@ async function executeReviewRun(request) {
     rendered: renderReviewResult(parsed, {
       reviewLabel: reviewName,
       targetLabel: context.target.label,
-      reasoningSummary: result.reasoningSummary
+      reasoningSummary: result.reasoningSummary,
+      fallbackModel: fallbackModelUsed
     }),
     summary: parsed.parsed?.summary ?? parsed.parseError ?? firstMeaningfulLine(result.finalMessage, `${reviewName} finished.`),
     jobTitle: `Codex ${reviewName}`,
@@ -482,7 +553,7 @@ async function executeTaskRun(request) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
   }
 
-  const result = await runAppServerTurn(workspaceRoot, {
+  const taskTurnOptions = {
     resumeThreadId,
     prompt: request.prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
@@ -492,7 +563,15 @@ async function executeTaskRun(request) {
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
-  });
+  };
+  let result = await runAppServerTurn(workspaceRoot, taskTurnOptions);
+  let fallbackModelUsed = null;
+  const fallbackModel = resolveModelFallbackForError(result.error, request.model);
+  if (fallbackModel) {
+    request.onProgress?.(`Model rejected; retrying with fallback model ${fallbackModel}.`);
+    result = await runAppServerTurn(workspaceRoot, { ...taskTurnOptions, model: fallbackModel });
+    fallbackModelUsed = fallbackModel;
+  }
 
   const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
   const failureMessage = result.error?.message ?? result.stderr ?? "";
@@ -505,13 +584,16 @@ async function executeTaskRun(request) {
     {
       title: taskMetadata.title,
       jobId: request.jobId ?? null,
-      write: Boolean(request.write)
+      write: Boolean(request.write),
+      fallbackModel: fallbackModelUsed
     }
   );
   const payload = {
     status: result.status,
     threadId: result.threadId,
     rawOutput,
+    error: result.error?.message ?? null,
+    fallbackModel: fallbackModelUsed,
     touchedFiles: result.touchedFiles,
     reasoningSummary: result.reasoningSummary
   };
@@ -1021,6 +1103,44 @@ async function handleCancel(argv) {
   outputCommandResult(payload, renderCancelReport(nextJob), options.json);
 }
 
+async function handleCleanup(argv) {
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "delete"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const preserved = findLatestResumableTaskJob(jobs);
+  const preservedThreadId = preserved?.threadId ?? null;
+
+  const terminalThreadIds = [
+    ...new Set(
+      jobs
+        .filter((job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled")
+        .map((job) => job.threadId)
+        .filter((threadId) => typeof threadId === "string" && threadId && threadId !== preservedThreadId)
+    )
+  ];
+
+  const action = options.delete ? "delete" : "archive";
+  const cleanupFn = options.delete ? deleteCodexThread : archiveCodexThread;
+  const results = terminalThreadIds.map((threadId) => {
+    const outcome = cleanupFn(cwd, threadId);
+    return { threadId, ok: outcome.ok, detail: outcome.detail };
+  });
+
+  const payload = {
+    action,
+    attempted: results.length,
+    preservedThreadId,
+    results
+  };
+
+  outputCommandResult(payload, renderCleanupReport(payload), options.json);
+}
+
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
   if (!subcommand || subcommand === "help" || subcommand === "--help") {
@@ -1060,6 +1180,9 @@ async function main() {
       break;
     case "cancel":
       await handleCancel(argv);
+      break;
+    case "cleanup":
+      await handleCleanup(argv);
       break;
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);

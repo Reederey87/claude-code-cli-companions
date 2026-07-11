@@ -190,6 +190,72 @@ test("ask forwards model selection with explicit, configured, then CLI-default p
   assert.equal(calls[2].args.includes("--model"), false);
 });
 
+test("ask forwards explicit effort, max-turns, and json-schema flags to Grok", () => {
+  const fixture = createEnvironment();
+  const schema = '{"type":"object"}';
+  const result = invoke(fixture, [
+    "ask",
+    "--effort",
+    "high",
+    "--max-turns",
+    "25",
+    "--json-schema",
+    schema,
+    "explain",
+    "this",
+    "--json"
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const call = fixture.fake.readState().calls[0];
+  assert.equal(call.args[call.args.indexOf("--effort") + 1], "high");
+  assert.equal(call.args[call.args.indexOf("--max-turns") + 1], "25");
+  assert.equal(call.args[call.args.indexOf("--json-schema") + 1], schema);
+});
+
+test("a default run omits effort, max-turns, and json-schema flags", () => {
+  const fixture = createEnvironment();
+  const result = invoke(fixture, ["ask", "explain", "this", "--json"], {
+    env: { CLAUDE_PLUGIN_OPTION_DEFAULT_EFFORT: "", CLAUDE_PLUGIN_OPTION_DEFAULT_MAX_TURNS: "" }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const call = fixture.fake.readState().calls[0];
+  assert.equal(call.args.includes("--effort"), false);
+  assert.equal(call.args.includes("--max-turns"), false);
+  assert.equal(call.args.includes("--json-schema"), false);
+});
+
+test("effort and max-turns fall back to env defaults, and an explicit flag wins", () => {
+  const fixture = createEnvironment();
+  const envDefaults = { CLAUDE_PLUGIN_OPTION_DEFAULT_EFFORT: "low", CLAUDE_PLUGIN_OPTION_DEFAULT_MAX_TURNS: "10" };
+
+  const defaulted = invoke(fixture, ["ask", "explain", "this", "--json"], { env: envDefaults });
+  assert.equal(defaulted.status, 0, defaulted.stderr);
+
+  const overridden = invoke(
+    fixture,
+    ["ask", "--effort", "high", "--max-turns", "25", "explain", "this", "--json"],
+    { env: envDefaults }
+  );
+  assert.equal(overridden.status, 0, overridden.stderr);
+
+  const calls = fixture.fake.readState().calls;
+  assert.equal(calls[0].args[calls[0].args.indexOf("--effort") + 1], "low");
+  assert.equal(calls[0].args[calls[0].args.indexOf("--max-turns") + 1], "10");
+  assert.equal(calls[1].args[calls[1].args.indexOf("--effort") + 1], "high");
+  assert.equal(calls[1].args[calls[1].args.indexOf("--max-turns") + 1], "25");
+});
+
+test("an invalid --max-turns value is rejected before Grok is invoked", () => {
+  const fixture = createEnvironment();
+  const result = invoke(fixture, ["ask", "--max-turns", "abc", "explain", "this"]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--max-turns must be a positive integer\./);
+  assert.equal(fixture.fake.readState().calls.length, 0);
+});
+
 test("read-only commands use Grok sandbox, permission mode, explicit allows, and mutation denies", () => {
   const fixture = createEnvironment();
   const sourceFile = path.join(fixture.workspace, "source.txt");
@@ -444,6 +510,31 @@ test("task --wait executes in the foreground", () => {
   assert.equal(fixture.fake.readState().calls.length, 1);
 });
 
+test("task forwards explicit effort, max-turns, and json-schema flags to Grok", () => {
+  const fixture = createEnvironment();
+  const schema = '{"type":"object"}';
+  const result = invoke(fixture, [
+    "task",
+    "--wait",
+    "--effort",
+    "medium",
+    "--max-turns",
+    "5",
+    "--json-schema",
+    schema,
+    "inspect",
+    "the",
+    "failure",
+    "--json"
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const call = fixture.fake.readState().calls[0];
+  assert.equal(call.args[call.args.indexOf("--effort") + 1], "medium");
+  assert.equal(call.args[call.args.indexOf("--max-turns") + 1], "5");
+  assert.equal(call.args[call.args.indexOf("--json-schema") + 1], schema);
+});
+
 test("resume candidates, implicit status, and implicit results are scoped to the Claude session", () => {
   const fixture = createEnvironment();
   const current = { GROK_COMPANION_SESSION_ID: "claude-current" };
@@ -679,4 +770,53 @@ test("cancel does not resurrect a completed job", async () => {
   const cancelResult = invoke(fixture, ["cancel", queued.jobId, "--json"]);
   assert.notEqual(cancelResult.status, 0);
   assert.match(cancelResult.stderr, /already succeeded|already|not active/i);
+});
+
+test("cleanup deletes terminal task sessions while preserving the newest resumable session", () => {
+  const fixture = createEnvironment();
+  const first = invoke(fixture, ["task", "--fresh", "first", "task", "--json"]);
+  const second = invoke(fixture, ["task", "--fresh", "second", "task", "--json"]);
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(second.status, 0, second.stderr);
+  const firstJob = JSON.parse(first.stdout);
+  const secondJob = JSON.parse(second.stdout);
+
+  const cleanupResult = invoke(fixture, ["cleanup", "--json"]);
+  assert.equal(cleanupResult.status, 0, cleanupResult.stderr);
+  const payload = JSON.parse(cleanupResult.stdout);
+  assert.equal(payload.preservedSessionId, secondJob.grokSessionId);
+  assert.deepEqual(payload.results.map((entry) => entry.sessionId), [firstJob.grokSessionId]);
+  assert.equal(payload.results[0].ok, true);
+
+  const sessionsDeleteCalls = fixture.fake
+    .readState()
+    .calls.filter((call) => call.args.includes("sessions") && call.args.includes("delete"));
+  assert.deepEqual(
+    sessionsDeleteCalls.map((call) => call.args[call.args.length - 1]),
+    [firstJob.grokSessionId]
+  );
+});
+
+test("cleanup reports session deletion failures but still exits 0", () => {
+  const fixture = createEnvironment({ behavior: "failure" });
+  const first = invoke(fixture, ["task", "--fresh", "first", "task", "--json"]);
+  const second = invoke(fixture, ["task", "--fresh", "second", "task", "--json"]);
+  const firstJob = JSON.parse(first.stdout);
+  const secondJob = JSON.parse(second.stdout);
+
+  const cleanupResult = invoke(fixture, ["cleanup", "--json"]);
+  assert.equal(cleanupResult.status, 0, cleanupResult.stderr);
+  const payload = JSON.parse(cleanupResult.stdout);
+  assert.equal(payload.preservedSessionId, secondJob.grokSessionId);
+  assert.equal(payload.attempted, 1);
+  assert.equal(payload.results[0].sessionId, firstJob.grokSessionId);
+  assert.equal(payload.results[0].ok, false);
+  assert.equal(typeof payload.results[0].detail, "string");
+});
+
+test("cleanup reports nothing to clean up when no terminal task sessions exist", () => {
+  const fixture = createEnvironment();
+  const result = invoke(fixture, ["cleanup"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Nothing to clean up\./);
 });

@@ -9,6 +9,7 @@ export function runCommand(command, args = [], options = {}) {
     maxBuffer: options.maxBuffer,
     shell: false,
     stdio: "pipe",
+    timeout: options.timeout,
     windowsHide: true
   });
 
@@ -16,6 +17,7 @@ export function runCommand(command, args = [], options = {}) {
     command,
     args,
     status: result.status ?? 1,
+    signal: result.signal ?? null,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
     error: result.error ?? null

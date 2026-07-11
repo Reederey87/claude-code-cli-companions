@@ -23,9 +23,18 @@ test("Grok manifest exposes the configured plugin name and user settings", () =>
 
 test("Grok commands expose rescue forwarding and session hooks", () => {
   const files = fs.readdirSync(path.join(PLUGIN_ROOT, "commands")).sort();
-  assert.deepEqual(files, ["ask.md", "cancel.md", "rescue.md", "result.md", "review.md", "setup.md", "status.md"]);
+  assert.deepEqual(files, [
+    "ask.md",
+    "cancel.md",
+    "cleanup.md",
+    "rescue.md",
+    "result.md",
+    "review.md",
+    "setup.md",
+    "status.md"
+  ]);
 
-  for (const command of ["setup", "ask", "review", "status", "result", "cancel"]) {
+  for (const command of ["setup", "ask", "review", "status", "result", "cancel", "cleanup"]) {
     const source = read(`commands/${command}.md`);
     assert.doesNotMatch(source, /disable-model-invocation:\s*true/);
     assert.match(source, new RegExp(`grok-companion\\.mjs" ${command} "\\$ARGUMENTS"`));
