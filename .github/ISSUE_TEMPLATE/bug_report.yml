@@ -1,0 +1,85 @@
+name: 🐛 Bug report
+description: Report something broken in this fork's plugins (Codex/Grok for Claude Code)
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report for **Coding CLI Companions**
+        (`Reederey87/codex-plugin-cc`).
+
+        - For bugs in the **upstream Codex CLI or plugin**, file them at
+          [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc/issues) instead.
+        - For **security-sensitive** issues, do **not** use this form. See
+          [SECURITY.md](https://github.com/Reederey87/codex-plugin-cc/blob/main/SECURITY.md).
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Affected plugin
+      description: Which plugin is affected?
+      options:
+        - Codex (`/codex:*`)
+        - Grok (`/grok:*`)
+        - Both / unsure
+        - Repo / packaging / docs
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command(s) involved
+      description: The slash command(s) you ran, e.g. `/codex:review`, `/grok:rescue --write`.
+      placeholder: "/codex:review --base main"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the buggy behavior. Paste the relevant output or error message.
+      placeholder: "When I ran /codex:rescue, it ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, ordered steps so a maintainer can recreate the issue.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Output of `node -v`, the Claude Code version, and the wrapped CLI version (`codex --version` or `grok --version`). OS/arch too.
+      placeholder: |
+        Claude Code: 2.1.x
+        Node: v22.x
+        Codex CLI: 0.142.x  (or Grok Build: ...)
+        OS: macOS 15 / arm64
+      render: shell
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing issues and found no duplicate.
+          required: true
+        - label: This is a bug in this fork's code, not the upstream Codex CLI/plugin.
+          required: true
+        - label: This is not a security vulnerability (I used SECURITY.md for that).
+          required: true
