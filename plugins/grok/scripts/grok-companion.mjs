@@ -256,10 +256,10 @@ async function runStoredJob(cwd, job) {
   try {
     const before = running.request.write ? captureGitStatus(running.request.cwd) : null;
     const onPid = (pid) => {
-      const current = readJob(cwd, running.id);
-      if (current && current.status === "running") {
-        writeJob(cwd, { ...running, grokPid: pid });
-      }
+      // Record the Grok subprocess pid only while the job is still running.
+      // Route through the locked CAS so a concurrent cancel that flipped the
+      // state to "cancelled" cannot be clobbered back to "running".
+      compareAndSwapJobState(cwd, running.id, "running", { ...running, grokPid: pid });
     };
     const grokResult = running.request.write
       ? await runWriteGrok({
