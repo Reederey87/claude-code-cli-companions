@@ -86,19 +86,81 @@ export function isActiveJob(job) {
   return Boolean(job) && (job.status === "queued" || job.status === "running");
 }
 
+function jobCasLockDir(cwd, jobId) {
+  return path.join(resolveJobsDir(cwd), `${jobId}.cas.lock`);
+}
+
+// mkdir-based per-job mutex that serializes compare-and-swap writes, so a
+// concurrent writer can never clobber a terminal state (e.g. "cancelled") with
+// a stale "running" read earlier. NOT re-entrant: callers must not nest CAS
+// calls on the same job within a single held lock.
+function acquireJobCasLock(cwd, jobId) {
+  const lockDir = jobCasLockDir(cwd, jobId);
+  const ownerPath = path.join(lockDir, "owner.json");
+  fs.mkdirSync(path.dirname(lockDir), { recursive: true });
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    let created = false;
+    try {
+      fs.mkdirSync(lockDir);
+      created = true;
+    } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) {
+        throw error;
+      }
+      let owner = null;
+      try {
+        owner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+      } catch {
+        owner = null;
+      }
+      const ownerPid = Number(owner?.pid);
+      if (!owner || !Number.isFinite(ownerPid) || !isProcessAlive(ownerPid)) {
+        try { fs.unlinkSync(ownerPath); } catch { /* raced against another reclaimer */ }
+        try { fs.rmdirSync(lockDir); } catch { /* raced against another reclaimer */ }
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for state lock on Grok job ${jobId}.`);
+      }
+      const spinUntil = Date.now() + 4;
+      while (Date.now() < spinUntil) { /* brief backoff to avoid a tight CPU loop */ }
+      continue;
+    }
+    if (!created) {
+      continue;
+    }
+    try {
+      fs.writeFileSync(ownerPath, `${JSON.stringify({ pid: process.pid, at: nowIso() })}\n`, "utf8");
+    } catch (error) {
+      try { fs.rmdirSync(lockDir); } catch { /* best effort cleanup after a failed owner write */ }
+      throw error;
+    }
+    return lockDir;
+  }
+}
+
+function releaseJobCasLock(lockDir) {
+  if (!lockDir) {
+    return;
+  }
+  const ownerPath = path.join(lockDir, "owner.json");
+  try { fs.unlinkSync(ownerPath); } catch { /* already released */ }
+  try { fs.rmdirSync(lockDir); } catch { /* already released */ }
+}
+
 export function compareAndSwapJobState(cwd, jobId, expectedStatus, nextJob) {
-  const current = readJob(cwd, jobId);
-  if (!current || current.status !== expectedStatus) {
-    return { success: false, job: current ?? null };
+  const lockDir = acquireJobCasLock(cwd, jobId);
+  try {
+    const current = readJob(cwd, jobId);
+    if (!current || current.status !== expectedStatus) {
+      return { success: false, job: current ?? null };
+    }
+    const written = writeJob(cwd, { ...nextJob, writeToken: randomUUID() });
+    return { success: true, job: written };
+  } finally {
+    releaseJobCasLock(lockDir);
   }
-  const writeToken = randomUUID();
-  const candidate = { ...nextJob, writeToken };
-  const written = writeJob(cwd, candidate);
-  const verified = readJob(cwd, jobId);
-  if (!verified || verified.writeToken !== writeToken) {
-    return { success: false, job: verified ?? written };
-  }
-  return { success: true, job: verified };
 }
 
 export function listJobs(cwd) {
