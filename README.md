@@ -41,44 +41,6 @@ This repository packages two Claude Code plugins that wrap local coding CLIs:
 
 ## Install
 
-Add the marketplace in Claude Code:
-
-```text
-/plugin marketplace add openai/codex-plugin-cc
-```
-
-Install the plugins you need:
-
-```text
-/plugin install codex@openai-codex
-```
-
-Reload plugins:
-
-```text
-/reload-plugins
-```
-
-Then run:
-
-```text
-/codex:setup
-```
-
-`/codex:setup` will tell you whether Codex is ready. If Codex is missing and npm is available, it can offer to install Codex for you.
-
-If you prefer to install Codex yourself, use:
-
-```bash
-npm install -g @openai/codex
-```
-
-If Codex is installed but not logged in yet, run:
-
-```bash
-!codex login
-```
-
 ### Installing both Codex and Grok from this fork
 
 If you want to use both plugins from this repository's marketplace (`coding-cli-companions`):
