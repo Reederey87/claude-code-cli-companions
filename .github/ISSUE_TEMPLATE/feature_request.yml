@@ -1,0 +1,57 @@
+name: ✨ Feature request
+description: Suggest a new capability for this fork's plugins (Codex/Grok for Claude Code)
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature for **Coding CLI Companions**
+        (`Reederey87/codex-plugin-cc`)!
+
+        - Features that apply to the **upstream Codex plugin** should go to
+          [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc/issues).
+        - Fork-specific ideas (Grok plugin, fork install paths, fork packaging) belong here.
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Target plugin
+      description: Which plugin should this feature affect?
+      options:
+        - Codex (`/codex:*`)
+        - Grok (`/grok:*`)
+        - Both
+        - Repo / packaging / docs
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem does this solve, or what's currently hard to do?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you'd like to happen. A command shape, flag, or behavior is ideal.
+      placeholder: "A new /codex:foo --bar flag that ..."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways you considered solving this, and why they fall short.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing issues and found no duplicate.
+          required: true
+        - label: This is specific to this fork (not an upstream-only Codex feature).
+          required: true

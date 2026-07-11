@@ -474,3 +474,24 @@ Yes. The Codex plugin uses the `/codex:*` namespace and the Grok plugin uses `/g
 ### Does the Grok plugin use a separate Grok runtime?
 
 No. The plugin invokes your local `grok` binary in headless mode (`grok -p`) on the same machine. It uses the same authentication, configuration, and repository checkout you would use directly.
+
+## Contributing
+
+Contributions are welcome! This is a fork of [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) that adds the Grok plugin and fork-specific changes.
+
+- **Read [CONTRIBUTING.md](./CONTRIBUTING.md)** for the pull-request workflow, build/test commands, and commit conventions.
+- `main` is protected: all changes land via a pull request that passes CI (`npm test` + `npm run build`) and receives maintainer approval before merging.
+- Fork-specific bugs/features go in this repo's issues; upstream Codex bugs go to [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc/issues).
+- Build/test/style conventions live in [`AGENTS.md`](./AGENTS.md).
+
+## Code of Conduct
+
+This project follows the [Contributor Covenant Code of Conduct](./CODE_OF_CONDUCT.md). By participating, you agree to uphold it.
+
+## Security
+
+Found a vulnerability? **Do not open a public issue.** See [SECURITY.md](./SECURITY.md) and report it privately via [GitHub Security Advisories](https://github.com/Reederey87/codex-plugin-cc/security/advisories/new).
+
+## License
+
+This project is licensed under the [Apache License 2.0](./LICENSE). See [`NOTICE`](./NOTICE) for attribution.
