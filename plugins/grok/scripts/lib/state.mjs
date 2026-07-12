@@ -4,12 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { isProcessAlive } from "./process.mjs";
-import { resolveWorkspace } from "./workspace.mjs";
+import { resolveSharedWorkspace, resolveWorkspace } from "./workspace.mjs";
 
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const FALLBACK_ROOT = path.join(os.tmpdir(), "grok-companion");
 const JOB_ID_PATTERN = /^grok-(?:ask|review|task)-[a-z0-9-]+$/;
-const WRITE_LOCK_NAME = "write.lock";
 
 function nowIso() {
   return new Date().toISOString();
@@ -29,8 +28,12 @@ function assertJobId(jobId) {
   }
 }
 
+function resolveLegacyJobsDir(cwd) {
+  return path.join(stateRoot(), "jobs", workspaceHash(resolveWorkspace(cwd)));
+}
+
 export function resolveJobsDir(cwd) {
-  const workspaceRoot = resolveWorkspace(cwd);
+  const workspaceRoot = resolveSharedWorkspace(cwd);
   return path.join(stateRoot(), "jobs", workspaceHash(workspaceRoot));
 }
 
@@ -44,17 +47,20 @@ export function resolveJobLogFile(cwd, jobId) {
   return path.join(resolveJobsDir(cwd), `${jobId}.log`);
 }
 
+/** Per-worktree write lock inside the shared jobs directory. */
 export function resolveWriteLockDir(cwd) {
-  return path.join(resolveJobsDir(cwd), WRITE_LOCK_NAME);
+  return path.join(resolveJobsDir(cwd), `write.${workspaceHash(resolveWorkspace(cwd))}.lock`);
 }
 
 export function createJob(kind, cwd, fields = {}) {
-  const workspaceRoot = resolveWorkspace(cwd);
+  const workspaceRoot = resolveSharedWorkspace(cwd);
+  const worktreeRoot = resolveWorkspace(cwd);
   const createdAt = nowIso();
   return {
     id: `grok-${kind}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
     kind,
     workspaceRoot,
+    worktreeRoot,
     status: "queued",
     createdAt,
     updatedAt: createdAt,
@@ -163,8 +169,7 @@ export function compareAndSwapJobState(cwd, jobId, expectedStatus, nextJob) {
   }
 }
 
-export function listJobs(cwd) {
-  const jobsDir = resolveJobsDir(cwd);
+function readJobsFromDir(jobsDir) {
   if (!fs.existsSync(jobsDir)) {
     return [];
   }
@@ -177,8 +182,31 @@ export function listJobs(cwd) {
       } catch {
         return [];
       }
-    })
-    .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+    });
+}
+
+export function listJobs(cwd) {
+  const jobsDir = resolveJobsDir(cwd);
+  const jobsById = new Map();
+  for (const job of readJobsFromDir(jobsDir)) {
+    if (job?.id) {
+      jobsById.set(job.id, job);
+    }
+  }
+
+  // Legacy read-only: worktree-keyed jobs dir (pre-shared-root). Never write/move/delete there.
+  const legacyDir = resolveLegacyJobsDir(cwd);
+  if (legacyDir !== jobsDir) {
+    for (const job of readJobsFromDir(legacyDir)) {
+      if (job?.id && !jobsById.has(job.id)) {
+        jobsById.set(job.id, job);
+      }
+    }
+  }
+
+  return [...jobsById.values()].sort((left, right) =>
+    String(right.updatedAt).localeCompare(String(left.updatedAt))
+  );
 }
 
 export function resolveJobReference(cwd, reference, options = {}) {

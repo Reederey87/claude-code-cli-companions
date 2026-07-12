@@ -20,17 +20,20 @@ function createEnvironment(options = {}) {
   fs.mkdirSync(binDir);
   fs.mkdirSync(workspace);
   const fake = options.installFake === false ? null : installFakeGrok(binDir, options.behavior);
+  const env = {
+    ...process.env,
+    PATH: options.installFake === false ? binDir : `${binDir}${path.delimiter}${process.env.PATH}`,
+    CLAUDE_PLUGIN_DATA: pluginData,
+    ...(options.env ?? {})
+  };
+  // Companion refuses nested invocation; strip the guard so tests work under Grok/Codex agents.
+  delete env.GROK_BUILD_COMPANION_ACTIVE;
   return {
     root,
     binDir,
     workspace,
     fake,
-    env: {
-      ...process.env,
-      PATH: options.installFake === false ? binDir : `${binDir}${path.delimiter}${process.env.PATH}`,
-      CLAUDE_PLUGIN_DATA: pluginData,
-      ...(options.env ?? {})
-    }
+    env
   };
 }
 
@@ -896,4 +899,87 @@ test("cleanup reports nothing to clean up when no terminal task sessions exist",
   const result = invoke(fixture, ["cleanup"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Nothing to clean up\./);
+});
+
+test("status from main checkout shows a job launched in a linked worktree", () => {
+  const fixture = createEnvironment();
+  initGitRepo(fixture.workspace);
+  fs.writeFileSync(path.join(fixture.workspace, "app.js"), "console.log('v1');\n");
+  commit(fixture.workspace, "init");
+
+  const worktree = path.join(fixture.root, "linked-worktree");
+  const add = run("git", ["worktree", "add", worktree, "HEAD"], { cwd: fixture.workspace });
+  assert.equal(add.status, 0, add.stderr + add.stdout);
+
+  try {
+    const sessionEnv = { GROK_COMPANION_SESSION_ID: "claude-shared" };
+    const launched = invoke(fixture, ["task", "--fresh", "worktree", "task", "--json"], {
+      cwd: worktree,
+      env: sessionEnv
+    });
+    assert.equal(launched.status, 0, launched.stderr);
+    const job = JSON.parse(launched.stdout);
+    assert.ok(job.worktreeRoot);
+    assert.equal(fs.realpathSync.native(job.worktreeRoot), fs.realpathSync.native(worktree));
+
+    const statusFromMain = invoke(fixture, ["status", "--json"], {
+      cwd: fixture.workspace,
+      env: sessionEnv
+    });
+    assert.equal(statusFromMain.status, 0, statusFromMain.stderr);
+    const jobs = JSON.parse(statusFromMain.stdout);
+    assert.equal(jobs.some((entry) => entry.id === job.id), true);
+
+    const textStatus = invoke(fixture, ["status"], {
+      cwd: fixture.workspace,
+      env: sessionEnv
+    });
+    assert.equal(textStatus.status, 0, textStatus.stderr);
+    assert.match(textStatus.stdout, new RegExp(job.id));
+    assert.match(textStatus.stdout, /worktree:/);
+  } finally {
+    run("git", ["worktree", "remove", "--force", worktree], { cwd: fixture.workspace });
+  }
+});
+
+test("status --all reveals other-session jobs; default status prints an honest hidden-jobs summary", () => {
+  const fixture = createEnvironment();
+  const current = { GROK_COMPANION_SESSION_ID: "claude-current" };
+  const other = { GROK_COMPANION_SESSION_ID: "claude-other" };
+
+  const currentRun = invoke(fixture, ["task", "--fresh", "current", "task", "--json"], { env: current });
+  const otherRun = invoke(fixture, ["task", "--fresh", "other", "task", "--json"], { env: other });
+  assert.equal(currentRun.status, 0, currentRun.stderr);
+  assert.equal(otherRun.status, 0, otherRun.stderr);
+  const currentJob = JSON.parse(currentRun.stdout);
+  const otherJob = JSON.parse(otherRun.stdout);
+
+  const scoped = invoke(fixture, ["status", "--json"], { env: current });
+  assert.equal(scoped.status, 0, scoped.stderr);
+  assert.deepEqual(
+    JSON.parse(scoped.stdout).map((job) => job.id),
+    [currentJob.id]
+  );
+
+  const textScoped = invoke(fixture, ["status"], { env: current });
+  assert.equal(textScoped.status, 0, textScoped.stderr);
+  assert.match(textScoped.stdout, new RegExp(currentJob.id));
+  assert.doesNotMatch(textScoped.stdout, new RegExp(otherJob.id));
+  assert.match(
+    textScoped.stdout,
+    /1 other job\(s\) from other sessions\/worktrees — run \/grok:status --all/
+  );
+
+  const allJson = invoke(fixture, ["status", "--all", "--json"], { env: current });
+  assert.equal(allJson.status, 0, allJson.stderr);
+  const allIds = JSON.parse(allJson.stdout)
+    .map((job) => job.id)
+    .sort();
+  assert.deepEqual(allIds, [currentJob.id, otherJob.id].sort());
+
+  const allText = invoke(fixture, ["status", "--all"], { env: current });
+  assert.equal(allText.status, 0, allText.stderr);
+  assert.match(allText.stdout, new RegExp(currentJob.id));
+  assert.match(allText.stdout, new RegExp(otherJob.id));
+  assert.doesNotMatch(allText.stdout, /other job\(s\) from other sessions/);
 });

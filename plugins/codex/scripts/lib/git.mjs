@@ -91,6 +91,53 @@ export function getRepoRoot(cwd) {
   return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
 }
 
+/**
+ * Shared repo root across linked worktrees (dirname of git-common-dir).
+ * Matches getRepoRoot on a normal checkout; from a linked worktree returns the main root.
+ * Used for companion state/job visibility — not for review diff context.
+ */
+export function getSharedRepoRoot(cwd) {
+  const resolvedCwd = path.resolve(cwd);
+
+  const bareResult = git(resolvedCwd, ["rev-parse", "--is-bare-repository"]);
+  const bareErrorCode = bareResult.error && "code" in bareResult.error ? bareResult.error.code : null;
+  if (bareErrorCode === "ENOENT") {
+    throw new Error("git is not installed. Install Git and retry.");
+  }
+  if (bareResult.status !== 0) {
+    throw new Error("This command must run inside a Git repository.");
+  }
+  if (bareResult.stdout.trim() === "true") {
+    try {
+      return getRepoRoot(resolvedCwd);
+    } catch {
+      return resolvedCwd;
+    }
+  }
+
+  const absoluteCommon = git(resolvedCwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (absoluteCommon.status === 0) {
+    const commonDir = absoluteCommon.stdout.trim();
+    try {
+      return path.dirname(fs.realpathSync.native(commonDir));
+    } catch {
+      return path.dirname(path.resolve(commonDir));
+    }
+  }
+
+  // Older git without --path-format=absolute
+  const plainCommon = git(resolvedCwd, ["rev-parse", "--git-common-dir"]);
+  if (plainCommon.status !== 0) {
+    throw new Error("This command must run inside a Git repository.");
+  }
+  const resolvedCommon = path.resolve(resolvedCwd, plainCommon.stdout.trim());
+  try {
+    return path.dirname(fs.realpathSync.native(resolvedCommon));
+  } catch {
+    return path.dirname(resolvedCommon);
+  }
+}
+
 export function detectDefaultBranch(cwd) {
   const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
   if (symbolic.status === 0) {

@@ -52,7 +52,7 @@ function usage() {
     "  node scripts/grok-companion.mjs ask [--model <model>] [--cwd <dir>] [question]",
     "  node scripts/grok-companion.mjs review [--background] [--base <ref>] [--scope working-tree|branch|repo] [--model <model>] [--cwd <dir>]",
     "  node scripts/grok-companion.mjs task [--background|--wait] [--resume|--fresh] [--write] [--always-approve|--yolo] [--model <model>] [--cwd <dir>] [task]",
-    "  node scripts/grok-companion.mjs status [job-id] [--json] [--cwd <dir>]",
+    "  node scripts/grok-companion.mjs status [job-id] [--all] [--json] [--cwd <dir>]",
     "  node scripts/grok-companion.mjs result [job-id] [--json] [--cwd <dir>]",
     "  node scripts/grok-companion.mjs cancel [job-id] [--json] [--cwd <dir>]",
     "  node scripts/grok-companion.mjs task-resume-candidate [--json] [--cwd <dir>]",
@@ -598,15 +598,33 @@ async function handleWorker(argv) {
 function handleStatus(argv) {
   const { options, positionals } = parseCommand(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "all"]
   });
   const cwd = resolveCwd(options);
   const job = positionals[0] ? resolveJobReference(cwd, positionals[0]) : null;
   if (positionals[0] && !job) {
     throw new Error(`No Grok job found for "${positionals[0]}".`);
   }
-  const payload = job ?? filterJobsForCurrentClaudeSession(listJobs(cwd));
-  output(options.json ? payload : renderStatus(job ? [job] : payload), options.json);
+  if (job) {
+    output(options.json ? job : renderStatus([job]), options.json);
+    return;
+  }
+
+  const allJobs = listJobs(cwd);
+  const payload = options.all ? allJobs : filterJobsForCurrentClaudeSession(allJobs);
+  if (options.json) {
+    output(payload, true);
+    return;
+  }
+
+  let rendered = renderStatus(payload);
+  if (!options.all) {
+    const hiddenCount = allJobs.length - payload.length;
+    if (hiddenCount > 0) {
+      rendered = `${rendered.trimEnd()}\n\n${hiddenCount} other job(s) from other sessions/worktrees — run /grok:status --all\n`;
+    }
+  }
+  output(rendered, false);
 }
 
 function handleResult(argv) {

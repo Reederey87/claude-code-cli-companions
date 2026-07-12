@@ -1,7 +1,17 @@
 function displayJob(job) {
+  const worktreePath = job.worktreeRoot ?? job.request?.cwd ?? null;
+  const sharedRoot = job.workspaceRoot ?? null;
+  const showWorktree =
+    typeof worktreePath === "string" &&
+    worktreePath &&
+    typeof sharedRoot === "string" &&
+    sharedRoot &&
+    worktreePath !== sharedRoot;
+
   return [
     `- ${job.id} | ${job.kind} | ${job.status}`,
     job.summary ? `  ${job.summary}` : null,
+    showWorktree ? `  worktree: ${worktreePath}` : null,
     job.pid ? `  PID: ${job.pid}` : null,
     job.errorMessage && job.status !== "incomplete" ? `  Error: ${job.errorMessage}` : null,
     job.status === "incomplete"
