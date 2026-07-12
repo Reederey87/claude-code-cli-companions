@@ -1,6 +1,6 @@
 {
   "name": "grok",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Use a local Grok Build CLI from Claude Code for questions, reviews, and bounded rescue tasks.",
   "author": {
     "name": "External CLI Companions"

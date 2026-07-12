@@ -91,6 +91,53 @@ export function getRepoRoot(cwd) {
   return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
 }
 
+/**
+ * Shared repo root across linked worktrees (dirname of git-common-dir).
+ * Matches getRepoRoot on a normal checkout; from a linked worktree returns the main root.
+ * Used for companion state/job visibility — not for review diff context.
+ */
+export function getSharedRepoRoot(cwd) {
+  const resolvedCwd = path.resolve(cwd);
+
+  const bareResult = git(resolvedCwd, ["rev-parse", "--is-bare-repository"]);
+  const bareErrorCode = bareResult.error && "code" in bareResult.error ? bareResult.error.code : null;
+  if (bareErrorCode === "ENOENT") {
+    throw new Error("git is not installed. Install Git and retry.");
+  }
+  if (bareResult.status !== 0) {
+    throw new Error("This command must run inside a Git repository.");
+  }
+  if (bareResult.stdout.trim() === "true") {
+    try {
+      return getRepoRoot(resolvedCwd);
+    } catch {
+      return resolvedCwd;
+    }
+  }
+
+  const absoluteCommon = git(resolvedCwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (absoluteCommon.status === 0) {
+    const commonDir = absoluteCommon.stdout.trim();
+    try {
+      return path.dirname(fs.realpathSync.native(commonDir));
+    } catch {
+      return path.dirname(path.resolve(commonDir));
+    }
+  }
+
+  // Older git without --path-format=absolute
+  const plainCommon = git(resolvedCwd, ["rev-parse", "--git-common-dir"]);
+  if (plainCommon.status !== 0) {
+    throw new Error("This command must run inside a Git repository.");
+  }
+  const resolvedCommon = path.resolve(resolvedCwd, plainCommon.stdout.trim());
+  try {
+    return path.dirname(fs.realpathSync.native(resolvedCommon));
+  } catch {
+    return path.dirname(resolvedCommon);
+  }
+}
+
 export function detectDefaultBranch(cwd) {
   const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
   if (symbolic.status === 0) {
@@ -129,6 +176,66 @@ export function getWorkingTreeState(cwd) {
     unstaged,
     untracked,
     isDirty: staged.length > 0 || unstaged.length > 0 || untracked.length > 0
+  };
+}
+
+/**
+ * Capture paths that differ from HEAD plus untracked files.
+ * Returns null when cwd is not a Git work tree (write-summary callers skip silently).
+ * @param {string} cwd
+ * @returns {Set<string> | null}
+ */
+export function captureWriteGitStatus(cwd) {
+  const inside = git(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.error || inside.status !== 0 || inside.stdout.trim() !== "true") {
+    return null;
+  }
+
+  const paths = new Set();
+  const hasHead = git(cwd, ["rev-parse", "--verify", "HEAD"]);
+  if (hasHead.status === 0) {
+    const diff = git(cwd, ["diff", "--name-only", "HEAD", "-z"]);
+    if (diff.error) {
+      throw diff.error;
+    }
+    if (diff.status !== 0) {
+      throw new Error(diff.stderr.trim() || "Unable to capture Git diff for this write task.");
+    }
+    for (const entry of String(diff.stdout ?? "").split("\0")) {
+      if (entry) {
+        paths.add(entry);
+      }
+    }
+  }
+
+  const untracked = git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (untracked.error) {
+    throw untracked.error;
+  }
+  if (untracked.status !== 0) {
+    throw new Error(untracked.stderr.trim() || "Unable to capture untracked files for this write task.");
+  }
+  for (const entry of String(untracked.stdout ?? "").split("\0")) {
+    if (entry) {
+      paths.add(entry);
+    }
+  }
+  return paths;
+}
+
+/**
+ * @param {Set<string>} before
+ * @param {Set<string>} after
+ */
+export function summarizeWriteChanges(before, after) {
+  const changedFiles = [
+    ...[...after].filter((filePath) => !before.has(filePath)),
+    ...[...before].filter((filePath) => !after.has(filePath))
+  ].sort();
+  return {
+    before: [...before].sort(),
+    after: [...after].sort(),
+    changedFiles
   };
 }
 

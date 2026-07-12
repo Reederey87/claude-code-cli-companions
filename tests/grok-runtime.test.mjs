@@ -20,17 +20,20 @@ function createEnvironment(options = {}) {
   fs.mkdirSync(binDir);
   fs.mkdirSync(workspace);
   const fake = options.installFake === false ? null : installFakeGrok(binDir, options.behavior);
+  const env = {
+    ...process.env,
+    PATH: options.installFake === false ? binDir : `${binDir}${path.delimiter}${process.env.PATH}`,
+    CLAUDE_PLUGIN_DATA: pluginData,
+    ...(options.env ?? {})
+  };
+  // Companion refuses nested invocation; strip the guard so tests work under Grok/Codex agents.
+  delete env.GROK_BUILD_COMPANION_ACTIVE;
   return {
     root,
     binDir,
     workspace,
     fake,
-    env: {
-      ...process.env,
-      PATH: options.installFake === false ? binDir : `${binDir}${path.delimiter}${process.env.PATH}`,
-      CLAUDE_PLUGIN_DATA: pluginData,
-      ...(options.env ?? {})
-    }
+    env
   };
 }
 
@@ -337,12 +340,89 @@ test("malformed Grok JSON is preserved as raw output", () => {
   const fixture = createEnvironment({ behavior: "malformed-json" });
   const result = invoke(fixture, ["ask", "return", "a", "summary", "--json"]);
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 2, result.stderr);
   const job = JSON.parse(result.stdout);
-  assert.equal(job.status, "succeeded");
+  assert.equal(job.status, "incomplete");
   assert.equal(job.result.grok.parsed, null);
   assert.equal(job.result.grok.rawOutput, "not valid json");
   assert.match(job.result.grok.parseError, /Unexpected token/i);
+  assert.match(job.rendered, /INCOMPLETE/);
+});
+
+test("cancelled task jobs are incomplete and use the distinct foreground exit code", () => {
+  const fixture = createEnvironment({ behavior: "cancelled" });
+  const result = invoke(fixture, ["task", "--fresh", "attempt", "the", "task", "--json"]);
+
+  assert.equal(result.status, 2, result.stderr);
+  const job = JSON.parse(result.stdout);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.evidence.stopReason, "Cancelled");
+  assert.equal(job.stopReason, "Cancelled");
+  assert.match(job.rendered, /INCOMPLETE/);
+});
+
+test("cancelled write jobs preserve incomplete edits and render their changed files", () => {
+  const fixture = createEnvironment({ behavior: "cancelled-with-edits" });
+  initGitRepo(fixture.workspace);
+  const result = invoke(fixture, [
+    "task",
+    "--fresh",
+    "--write",
+    "--always-approve",
+    "attempt",
+    "the",
+    "task",
+    "--json"
+  ]);
+
+  assert.equal(result.status, 2, result.stderr);
+  const job = JSON.parse(result.stdout);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.writeSummary.changedFiles.includes("grok-write.txt"), true);
+  assert.match(job.rendered, /INCOMPLETE/);
+  assert.match(job.rendered, /grok-write\.txt/);
+});
+
+test("max-turns exhaustion is incomplete despite Grok exiting 1", () => {
+  const fixture = createEnvironment({ behavior: "max-turns" });
+  const result = invoke(fixture, ["task", "--fresh", "attempt", "the", "task", "--json"]);
+
+  assert.equal(result.status, 2, result.stderr);
+  const job = JSON.parse(result.stdout);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.evidence.exitStatus, 1);
+  assert.equal(job.evidence.stopReason, "Cancelled");
+});
+
+test("a Grok crash without JSON remains failed", () => {
+  const fixture = createEnvironment({ behavior: "failure" });
+  const result = invoke(fixture, ["task", "--fresh", "attempt", "the", "task", "--json"]);
+
+  assert.equal(result.status, 1, result.stderr);
+  const job = JSON.parse(result.stdout);
+  assert.equal(job.status, "failed");
+  assert.equal(job.evidence.stopReason, null);
+  assert.equal(job.evidence.exitStatus, 3);
+});
+
+test("a clean write job with no changes succeeds and explains that no edits landed", () => {
+  const fixture = createEnvironment();
+  initGitRepo(fixture.workspace);
+  const result = invoke(fixture, [
+    "task",
+    "--fresh",
+    "--write",
+    "--always-approve",
+    "inspect",
+    "without",
+    "editing",
+    "--json"
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const job = JSON.parse(result.stdout);
+  assert.equal(job.status, "succeeded");
+  assert.match(job.rendered, /No Git status changes detected \(no edits landed\)/);
 });
 
 test("review gathers bounded working-tree and base-branch context without untracked contents", () => {
@@ -444,7 +524,7 @@ test("background jobs persist a queued record and status/result retrieve scoped 
   assert.equal(result.status, 0, result.stderr);
   const completed = JSON.parse(result.stdout);
   assert.equal(completed.status, "succeeded");
-  assert.equal(completed.result.grok.parsed.answer, "fake response");
+  assert.equal(completed.result.grok.parsed.text, "fake response");
   assert.match(completed.rendered, /Grok Rescue/);
 });
 
@@ -819,4 +899,87 @@ test("cleanup reports nothing to clean up when no terminal task sessions exist",
   const result = invoke(fixture, ["cleanup"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Nothing to clean up\./);
+});
+
+test("status from main checkout shows a job launched in a linked worktree", () => {
+  const fixture = createEnvironment();
+  initGitRepo(fixture.workspace);
+  fs.writeFileSync(path.join(fixture.workspace, "app.js"), "console.log('v1');\n");
+  commit(fixture.workspace, "init");
+
+  const worktree = path.join(fixture.root, "linked-worktree");
+  const add = run("git", ["worktree", "add", worktree, "HEAD"], { cwd: fixture.workspace });
+  assert.equal(add.status, 0, add.stderr + add.stdout);
+
+  try {
+    const sessionEnv = { GROK_COMPANION_SESSION_ID: "claude-shared" };
+    const launched = invoke(fixture, ["task", "--fresh", "worktree", "task", "--json"], {
+      cwd: worktree,
+      env: sessionEnv
+    });
+    assert.equal(launched.status, 0, launched.stderr);
+    const job = JSON.parse(launched.stdout);
+    assert.ok(job.worktreeRoot);
+    assert.equal(fs.realpathSync.native(job.worktreeRoot), fs.realpathSync.native(worktree));
+
+    const statusFromMain = invoke(fixture, ["status", "--json"], {
+      cwd: fixture.workspace,
+      env: sessionEnv
+    });
+    assert.equal(statusFromMain.status, 0, statusFromMain.stderr);
+    const jobs = JSON.parse(statusFromMain.stdout);
+    assert.equal(jobs.some((entry) => entry.id === job.id), true);
+
+    const textStatus = invoke(fixture, ["status"], {
+      cwd: fixture.workspace,
+      env: sessionEnv
+    });
+    assert.equal(textStatus.status, 0, textStatus.stderr);
+    assert.match(textStatus.stdout, new RegExp(job.id));
+    assert.match(textStatus.stdout, /worktree:/);
+  } finally {
+    run("git", ["worktree", "remove", "--force", worktree], { cwd: fixture.workspace });
+  }
+});
+
+test("status --all reveals other-session jobs; default status prints an honest hidden-jobs summary", () => {
+  const fixture = createEnvironment();
+  const current = { GROK_COMPANION_SESSION_ID: "claude-current" };
+  const other = { GROK_COMPANION_SESSION_ID: "claude-other" };
+
+  const currentRun = invoke(fixture, ["task", "--fresh", "current", "task", "--json"], { env: current });
+  const otherRun = invoke(fixture, ["task", "--fresh", "other", "task", "--json"], { env: other });
+  assert.equal(currentRun.status, 0, currentRun.stderr);
+  assert.equal(otherRun.status, 0, otherRun.stderr);
+  const currentJob = JSON.parse(currentRun.stdout);
+  const otherJob = JSON.parse(otherRun.stdout);
+
+  const scoped = invoke(fixture, ["status", "--json"], { env: current });
+  assert.equal(scoped.status, 0, scoped.stderr);
+  assert.deepEqual(
+    JSON.parse(scoped.stdout).map((job) => job.id),
+    [currentJob.id]
+  );
+
+  const textScoped = invoke(fixture, ["status"], { env: current });
+  assert.equal(textScoped.status, 0, textScoped.stderr);
+  assert.match(textScoped.stdout, new RegExp(currentJob.id));
+  assert.doesNotMatch(textScoped.stdout, new RegExp(otherJob.id));
+  assert.match(
+    textScoped.stdout,
+    /1 other job\(s\) from other sessions\/worktrees — run \/grok:status --all/
+  );
+
+  const allJson = invoke(fixture, ["status", "--all", "--json"], { env: current });
+  assert.equal(allJson.status, 0, allJson.stderr);
+  const allIds = JSON.parse(allJson.stdout)
+    .map((job) => job.id)
+    .sort();
+  assert.deepEqual(allIds, [currentJob.id, otherJob.id].sort());
+
+  const allText = invoke(fixture, ["status", "--all"], { env: current });
+  assert.equal(allText.status, 0, allText.stderr);
+  assert.match(allText.stdout, new RegExp(currentJob.id));
+  assert.match(allText.stdout, new RegExp(otherJob.id));
+  assert.doesNotMatch(allText.stdout, /other job\(s\) from other sessions/);
 });

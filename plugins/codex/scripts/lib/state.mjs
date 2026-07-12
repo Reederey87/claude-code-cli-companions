@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { ensureGitRepository } from "./git.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
@@ -26,8 +27,7 @@ function defaultState() {
   };
 }
 
-export function resolveStateDir(cwd) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
+function stateDirForWorkspaceRoot(workspaceRoot) {
   let canonicalWorkspaceRoot = workspaceRoot;
   try {
     canonicalWorkspaceRoot = fs.realpathSync.native(workspaceRoot);
@@ -43,6 +43,21 @@ export function resolveStateDir(cwd) {
   return path.join(stateRoot, `${slug}-${hash}`);
 }
 
+/** Pre-shared-root key: show-toplevel (worktree-local) or cwd. Read-only fallback only. */
+function resolveLegacyStateDir(cwd) {
+  let workspaceRoot;
+  try {
+    workspaceRoot = ensureGitRepository(cwd);
+  } catch {
+    workspaceRoot = cwd;
+  }
+  return stateDirForWorkspaceRoot(workspaceRoot);
+}
+
+export function resolveStateDir(cwd) {
+  return stateDirForWorkspaceRoot(resolveWorkspaceRoot(cwd));
+}
+
 export function resolveStateFile(cwd) {
   return path.join(resolveStateDir(cwd), STATE_FILE_NAME);
 }
@@ -55,12 +70,7 @@ export function ensureStateDir(cwd) {
   fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
 }
 
-export function loadState(cwd) {
-  const stateFile = resolveStateFile(cwd);
-  if (!fs.existsSync(stateFile)) {
-    return defaultState();
-  }
-
+function parseStateFile(stateFile) {
   try {
     const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
     return {
@@ -75,6 +85,26 @@ export function loadState(cwd) {
   } catch {
     return defaultState();
   }
+}
+
+export function loadState(cwd) {
+  const stateFile = resolveStateFile(cwd);
+  if (fs.existsSync(stateFile)) {
+    return parseStateFile(stateFile);
+  }
+
+  // Legacy read-only: show-toplevel-keyed state when shared-root state is missing.
+  // Never write/move/delete the legacy directory.
+  const legacyDir = resolveLegacyStateDir(cwd);
+  const newDir = resolveStateDir(cwd);
+  if (legacyDir !== newDir) {
+    const legacyFile = path.join(legacyDir, STATE_FILE_NAME);
+    if (fs.existsSync(legacyFile)) {
+      return parseStateFile(legacyFile);
+    }
+  }
+
+  return defaultState();
 }
 
 function pruneJobs(jobs) {
@@ -102,13 +132,17 @@ export function saveState(cwd, state) {
     jobs: nextJobs
   };
 
+  const stateDir = resolveStateDir(cwd);
   const retainedIds = new Set(nextJobs.map((job) => job.id));
   for (const job of previousJobs) {
     if (retainedIds.has(job.id)) {
       continue;
     }
     removeJobFile(resolveJobFile(cwd, job.id));
-    removeFileIfExists(job.logFile);
+    // Never delete artifacts that live under a legacy (worktree-keyed) state dir.
+    if (typeof job.logFile === "string" && job.logFile.startsWith(stateDir + path.sep)) {
+      removeFileIfExists(job.logFile);
+    }
   }
 
   fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");

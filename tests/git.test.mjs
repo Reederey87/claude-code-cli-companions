@@ -3,8 +3,21 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { collectReviewContext, resolveReviewTarget } from "../plugins/codex/scripts/lib/git.mjs";
+import {
+  collectReviewContext,
+  getRepoRoot as getCodexRepoRoot,
+  getSharedRepoRoot as getCodexSharedRepoRoot,
+  resolveReviewTarget
+} from "../plugins/codex/scripts/lib/git.mjs";
+import {
+  getGitRepositoryRoot as getGrokRepoRoot,
+  getSharedRepoRoot as getGrokSharedRepoRoot
+} from "../plugins/grok/scripts/lib/workspace.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+
+function realpath(p) {
+  return fs.realpathSync.native(p);
+}
 
 test("resolveReviewTarget prefers working tree when repo is dirty", () => {
   const cwd = makeTempDir();
@@ -209,4 +222,64 @@ test("collectReviewContext keeps untracked file content in lightweight working t
   assert.doesNotMatch(context.content, /TRACKED_MARKER_[AB]/);
   assert.match(context.content, /## Untracked Files/);
   assert.match(context.content, /UNTRACKED_RISK_MARKER/);
+});
+
+test("getSharedRepoRoot matches show-toplevel on a normal checkout (codex + grok)", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+
+  const sharedCodex = realpath(getCodexSharedRepoRoot(cwd));
+  const toplevelCodex = realpath(getCodexRepoRoot(cwd));
+  const sharedGrok = realpath(getGrokSharedRepoRoot(cwd));
+  const toplevelGrok = realpath(getGrokRepoRoot(cwd));
+
+  assert.equal(sharedCodex, toplevelCodex);
+  assert.equal(sharedGrok, toplevelGrok);
+  assert.equal(sharedCodex, sharedGrok);
+});
+
+test("getSharedRepoRoot from a linked worktree returns the main root", () => {
+  const main = makeTempDir("shared-main-");
+  initGitRepo(main);
+  fs.writeFileSync(path.join(main, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd: main });
+  run("git", ["commit", "-m", "init"], { cwd: main });
+
+  const worktree = path.join(path.dirname(main), `${path.basename(main)}-wt`);
+  const add = run("git", ["worktree", "add", worktree, "HEAD"], { cwd: main });
+  assert.equal(add.status, 0, add.stderr + add.stdout);
+
+  try {
+    const mainRoot = realpath(main);
+    assert.equal(realpath(getCodexSharedRepoRoot(worktree)), mainRoot);
+    assert.equal(realpath(getGrokSharedRepoRoot(worktree)), mainRoot);
+    assert.equal(realpath(getCodexRepoRoot(worktree)), realpath(worktree));
+    assert.equal(realpath(getGrokRepoRoot(worktree)), realpath(worktree));
+    assert.notEqual(realpath(getCodexRepoRoot(worktree)), mainRoot);
+  } finally {
+    run("git", ["worktree", "remove", "--force", worktree], { cwd: main });
+  }
+});
+
+test("getSharedRepoRoot falls back for bare repositories", () => {
+  const bare = makeTempDir("shared-bare-");
+  const init = run("git", ["init", "--bare", "-b", "main"], { cwd: bare });
+  assert.equal(init.status, 0, init.stderr);
+
+  // Bare repos have no worktree; shared root should not throw and should return a path.
+  const codexRoot = getCodexSharedRepoRoot(bare);
+  const grokRoot = getGrokSharedRepoRoot(bare);
+  assert.equal(typeof codexRoot, "string");
+  assert.equal(typeof grokRoot, "string");
+  assert.ok(codexRoot.length > 0);
+  assert.ok(grokRoot.length > 0);
+});
+
+test("getSharedRepoRoot throws outside a git repository", () => {
+  const cwd = makeTempDir("not-git-");
+  assert.throws(() => getCodexSharedRepoRoot(cwd), /Git repository/i);
+  assert.throws(() => getGrokSharedRepoRoot(cwd), /Git repository/i);
 });

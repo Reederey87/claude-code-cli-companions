@@ -1,9 +1,57 @@
+function formatElapsedSince(startValue) {
+  const start = Date.parse(startValue ?? "");
+  if (!Number.isFinite(start)) {
+    return null;
+  }
+
+  const totalSeconds = Math.max(0, Math.round((Date.now() - start) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+function formatRunningLivenessLine(job) {
+  const liveness = job.liveness ?? "unknown";
+  if (liveness === "alive") {
+    const elapsed = formatElapsedSince(job.startedAt);
+    return elapsed
+      ? `  running (pid alive, ${elapsed} elapsed)`
+      : "  running (pid alive)";
+  }
+  if (liveness === "gone") {
+    return "  ⚠ running but pid gone — likely dead or externally cancelled; check /grok:result";
+  }
+  return "  running (liveness unknown)";
+}
+
 function displayJob(job) {
+  const worktreePath = job.worktreeRoot ?? job.request?.cwd ?? null;
+  const sharedRoot = job.workspaceRoot ?? null;
+  const showWorktree =
+    typeof worktreePath === "string" &&
+    worktreePath &&
+    typeof sharedRoot === "string" &&
+    sharedRoot &&
+    worktreePath !== sharedRoot;
+
   return [
     `- ${job.id} | ${job.kind} | ${job.status}`,
     job.summary ? `  ${job.summary}` : null,
+    showWorktree ? `  worktree: ${worktreePath}` : null,
     job.pid ? `  PID: ${job.pid}` : null,
-    job.errorMessage ? `  Error: ${job.errorMessage}` : null
+    job.status === "running" ? formatRunningLivenessLine(job) : null,
+    job.errorMessage && job.status !== "incomplete" ? `  Error: ${job.errorMessage}` : null,
+    job.status === "incomplete"
+      ? `  ⚠ stopped early (stopReason: ${job.stopReason ?? "unknown"}) — verify diff`
+      : null
   ]
     .filter(Boolean)
     .join("\n");
@@ -50,7 +98,14 @@ export function renderWriteSummary(writeSummary) {
     "Write summary:",
     ...(writeSummary.changedFiles.length > 0
       ? writeSummary.changedFiles.map((filePath) => `- ${filePath}`)
-      : ["- No Git status changes detected."])
+      : ["- No Git status changes detected (no edits landed)."])
+  ];
+}
+
+export function renderIncompleteBanner(stopReason) {
+  return [
+    `⚠ INCOMPLETE — Grok stopped early (stopReason: ${stopReason ?? "unknown"}).`,
+    "Changes may be partial. Verify against git status/diff before trusting any success narrative."
   ];
 }
 
@@ -92,9 +147,12 @@ export function renderJobResult(job) {
     `# Grok Result`,
     "",
     `Job: ${job.id}`,
-    `Status: ${job.status}`,
-    ""
+    `Status: ${job.status}`
   ];
+  if (job.status === "incomplete" && !job.rendered?.startsWith("⚠ INCOMPLETE")) {
+    lines.push("", ...renderIncompleteBanner(job.stopReason));
+  }
+  lines.push("");
   if (job.rendered) {
     lines.push(job.rendered.trimEnd());
   } else if (job.errorMessage) {
@@ -104,6 +162,12 @@ export function renderJobResult(job) {
   }
   if (job.writeSummary && !job.rendered) {
     lines.push("", ...renderWriteSummary(job.writeSummary));
+  }
+  if (job.status === "incomplete") {
+    lines.push(
+      "",
+      "Statuses: succeeded = clean EndTurn; incomplete = early stop, verify diff; failed = crashed; cancelled = user-cancelled."
+    );
   }
   return `${lines.join("\n")}\n`;
 }

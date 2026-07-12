@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import { collectReviewContext } from "./lib/git-context.mjs";
 import {
+  classifyGrokCompletion,
   deleteGrokSession,
   getGrokAvailability,
   getGrokInspect,
@@ -17,10 +18,11 @@ import {
   runReadOnlyGrok,
   runWriteGrok
 } from "./lib/grok-cli.mjs";
-import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
+import { binaryAvailable, isProcessAlive, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import {
   renderCleanupReport,
   renderGrokResult,
+  renderIncompleteBanner,
   renderJobResult,
   renderSetup,
   renderStatus,
@@ -29,6 +31,7 @@ import {
 import {
   acquireWriteLock,
   appendJobLog,
+  attachRunningLiveness,
   compareAndSwapJobState,
   createJob,
   listJobs,
@@ -50,7 +53,7 @@ function usage() {
     "  node scripts/grok-companion.mjs ask [--model <model>] [--cwd <dir>] [question]",
     "  node scripts/grok-companion.mjs review [--background] [--base <ref>] [--scope working-tree|branch|repo] [--model <model>] [--cwd <dir>]",
     "  node scripts/grok-companion.mjs task [--background|--wait] [--resume|--fresh] [--write] [--always-approve|--yolo] [--model <model>] [--cwd <dir>] [task]",
-    "  node scripts/grok-companion.mjs status [job-id] [--json] [--cwd <dir>]",
+    "  node scripts/grok-companion.mjs status [job-id] [--all] [--json] [--cwd <dir>]",
     "  node scripts/grok-companion.mjs result [job-id] [--json] [--cwd <dir>]",
     "  node scripts/grok-companion.mjs cancel [job-id] [--json] [--cwd <dir>]",
     "  node scripts/grok-companion.mjs task-resume-candidate [--json] [--cwd <dir>]",
@@ -286,14 +289,25 @@ async function runStoredJob(cwd, job) {
           onPid
         });
     const writeSummary = before ? summarizeWriteChanges(before, captureGitStatus(running.request.cwd)) : null;
+    const status = classifyGrokCompletion({
+      exitStatus: grokResult.status,
+      stopReason: grokResult.output.stopReason
+    });
     const rendered = [
+      ...(status === "incomplete" ? [...renderIncompleteBanner(grokResult.output.stopReason), ""] : []),
       renderGrokResult(grokResult, jobHeading(running.kind)).trimEnd(),
       ...(writeSummary ? ["", ...renderWriteSummary(writeSummary)] : [])
     ].join("\n") + "\n";
-    const status = grokResult.status === 0 ? "succeeded" : "failed";
+    const stopReason = grokResult.output.stopReason ?? null;
     const completionResult = compareAndSwapJobState(cwd, running.id, "running", {
       ...running,
       status,
+      stopReason,
+      evidence: {
+        stopReason,
+        exitStatus: grokResult.status,
+        changedFiles: writeSummary ? writeSummary.changedFiles : null
+      },
       pid: null,
       grokPid: grokResult.pid ?? running.grokPid ?? null,
       completedAt: new Date().toISOString(),
@@ -310,14 +324,24 @@ async function runStoredJob(cwd, job) {
       },
       writeSummary,
       rendered,
-      errorMessage: status === "failed" ? grokResult.stderr.trim() || `Grok exited with status ${grokResult.status}.` : null
+      errorMessage:
+        status === "failed"
+          ? grokResult.stderr.trim() || `Grok exited with status ${grokResult.status}.`
+          : status === "incomplete"
+            ? `Grok stopped early (stopReason: ${stopReason ?? "unknown"}).`
+            : null
     });
     if (!completionResult.success) {
       appendJobLog(cwd, running.id, "Job was cancelled while Grok was running.");
       return completionResult.job ?? running;
     }
     const completed = completionResult.job;
-    appendJobLog(cwd, completed.id, `${status === "succeeded" ? "Completed" : "Failed"} ${completed.kind} job.`);
+    const completionKind = status === "succeeded"
+      ? "Completed"
+      : status === "incomplete"
+        ? "Completed with incomplete status"
+        : "Failed";
+    appendJobLog(cwd, completed.id, `${completionKind} ${completed.kind} job.`);
     return completed;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -412,7 +436,10 @@ async function runForegroundJob(cwd, request, asJson) {
   }
   const completed = await runStoredJob(cwd, job);
   output(asJson ? completed : completed.rendered, asJson);
-  if (completed.status !== "succeeded") {
+  // Incomplete gets a distinct exit code because the diff often landed — callers must verify, not blindly retry.
+  if (completed.status === "incomplete") {
+    process.exitCode = 2;
+  } else if (completed.status !== "succeeded") {
     process.exitCode = 1;
   }
 }
@@ -572,15 +599,39 @@ async function handleWorker(argv) {
 function handleStatus(argv) {
   const { options, positionals } = parseCommand(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "all"]
   });
   const cwd = resolveCwd(options);
   const job = positionals[0] ? resolveJobReference(cwd, positionals[0]) : null;
   if (positionals[0] && !job) {
     throw new Error(`No Grok job found for "${positionals[0]}".`);
   }
-  const payload = job ?? filterJobsForCurrentClaudeSession(listJobs(cwd));
-  output(options.json ? payload : renderStatus(job ? [job] : payload), options.json);
+  if (job) {
+    const enriched = attachRunningLiveness(job);
+    output(options.json ? enriched : renderStatus([enriched]), options.json);
+    return;
+  }
+
+  const allJobs = listJobs(cwd);
+  const payload = (options.all ? allJobs : filterJobsForCurrentClaudeSession(allJobs)).map(
+    attachRunningLiveness
+  );
+  if (options.json) {
+    output(payload, true);
+    return;
+  }
+
+  let rendered = renderStatus(payload);
+  if (!options.all) {
+    const hiddenCount = allJobs.length - payload.length;
+    if (hiddenCount > 0) {
+      const note = `${hiddenCount} other job(s) from other sessions/worktrees — run /grok:status --all`;
+      rendered = payload.length === 0
+        ? `# Grok Status\n\n${note}\n`
+        : `${rendered.trimEnd()}\n\n${note}\n`;
+    }
+  }
+  output(rendered, false);
 }
 
 function handleResult(argv) {

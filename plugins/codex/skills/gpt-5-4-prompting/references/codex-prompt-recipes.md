@@ -1,5 +1,11 @@
 # Codex Prompt Recipes
 
+Sandbox note for any recipe that builds or tests code: sandboxed runs often cannot write
+default user-level build caches. Include a writable cache override in the task text when the
+toolchain needs one (Go: `use GOCACHE=/tmp/<task>-gocache`; similar for other toolchains'
+cache/config dirs). Symptom of the miss: permission errors on the first build, wasted turns
+on retries, or a job that dies mid-retry.
+
 Use these as starting templates for Codex task prompts or other Codex/GPT-5.4 prompt construction.
 Copy the smallest recipe that fits the task, then trim anything you do not need.
 In `codex:codex-rescue`, run diagnosis and fix-oriented recipes in write mode by default unless the user explicitly asked for read-only behavior.

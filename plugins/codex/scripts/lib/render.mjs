@@ -81,6 +81,8 @@ function isStructuredReviewStoredResult(storedJob) {
   );
 }
 
+const INACTIVITY_ADVISORY_MS = 5 * 60 * 1000;
+
 function formatJobLine(job) {
   const parts = [job.id, `${job.status || "unknown"}`];
   if (job.kindLabel) {
@@ -90,6 +92,31 @@ function formatJobLine(job) {
     parts.push(job.title);
   }
   return parts.join(" | ");
+}
+
+function isInactivityAdvisory(job) {
+  if (job.status !== "running" || !job.lastActivityAt) {
+    return false;
+  }
+  const lastActivityMs = Date.parse(job.lastActivityAt);
+  if (!Number.isFinite(lastActivityMs)) {
+    return false;
+  }
+  return Date.now() - lastActivityMs >= INACTIVITY_ADVISORY_MS;
+}
+
+function formatElapsedCell(job) {
+  if (job.status !== "running") {
+    return job.elapsed ?? "";
+  }
+  const parts = [];
+  if (job.elapsed) {
+    parts.push(job.elapsed);
+  }
+  if (job.inactiveFor) {
+    parts.push(`last activity ${job.inactiveFor} ago`);
+  }
+  return parts.join(", ");
 }
 
 function escapeMarkdownCell(value) {
@@ -116,7 +143,7 @@ function appendActiveJobsTable(lines, jobs) {
       actions.push(`/codex:cancel ${job.id}`);
     }
     lines.push(
-      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(formatElapsedCell(job))} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
     );
   }
 }
@@ -129,8 +156,18 @@ function pushJobDetails(lines, job, options = {}) {
   if (job.phase) {
     lines.push(`  Phase: ${job.phase}`);
   }
-  if (options.showElapsed && job.elapsed) {
-    lines.push(`  Elapsed: ${job.elapsed}`);
+  if (options.showElapsed && (job.elapsed || (job.status === "running" && job.inactiveFor))) {
+    if (job.status === "running" && job.inactiveFor) {
+      const elapsedPart = job.elapsed ? `${job.elapsed}, ` : "";
+      lines.push(`  Elapsed: ${elapsedPart}last activity ${job.inactiveFor} ago`);
+      if (isInactivityAdvisory(job)) {
+        lines.push(
+          `  no new activity for ${job.inactiveFor} — job may be stalled or mid long tool call`
+        );
+      }
+    } else if (job.elapsed) {
+      lines.push(`  Elapsed: ${job.elapsed}`);
+    }
   }
   if (options.showDuration && job.duration) {
     lines.push(`  Duration: ${job.duration}`);
@@ -345,19 +382,40 @@ export function renderNativeReviewResult(result, meta) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
+export function renderWriteSummary(writeSummary) {
+  return [
+    "Write summary:",
+    ...(writeSummary.changedFiles.length > 0
+      ? writeSummary.changedFiles.map((filePath) => `- ${filePath}`)
+      : ["- No Git status changes detected (no edits landed)."])
+  ];
+}
+
 export function renderTaskResult(parsedResult, meta) {
   const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
   const fallbackNote = meta?.fallbackModel
     ? `\nNote: retried with fallback model \`${meta.fallbackModel}\` after the primary model was rejected.\n`
     : "";
+  const writeSummaryLines =
+    meta?.writeSummary && typeof meta.writeSummary === "object"
+      ? ["", ...renderWriteSummary(meta.writeSummary)]
+      : [];
 
   if (rawOutput) {
     const output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
-    return `${output}${fallbackNote}`;
+    const withSummary =
+      writeSummaryLines.length > 0
+        ? `${output.trimEnd()}\n${writeSummaryLines.join("\n")}\n`
+        : output;
+    return `${withSummary}${fallbackNote}`;
   }
 
   const message = String(parsedResult?.failureMessage ?? "").trim() || "Codex did not return a final message.";
-  return `${message}\n${fallbackNote}`;
+  const withSummary =
+    writeSummaryLines.length > 0
+      ? `${message}\n${writeSummaryLines.join("\n")}\n`
+      : `${message}\n`;
+  return `${withSummary}${fallbackNote}`;
 }
 
 export function renderStatusReport(report) {
@@ -441,7 +499,11 @@ export function renderStoredJobResult(job, storedJob) {
     (typeof storedJob?.result?.codex?.stdout === "string" && storedJob.result.codex.stdout) ||
     "";
   if (rawOutput) {
-    const output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    let output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    const writeSummary = storedJob?.result?.writeSummary ?? storedJob?.writeSummary ?? null;
+    if (writeSummary && typeof writeSummary === "object") {
+      output = `${output.trimEnd()}\n\n${renderWriteSummary(writeSummary).join("\n")}\n`;
+    }
     if (!threadId) {
       return output;
     }

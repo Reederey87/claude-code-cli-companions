@@ -28,7 +28,13 @@ import {
   } from "./lib/codex.mjs";
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import {
+  captureWriteGitStatus,
+  collectReviewContext,
+  ensureGitRepository,
+  resolveReviewTarget,
+  summarizeWriteChanges
+} from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
@@ -553,13 +559,17 @@ async function executeTaskRun(request) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
   }
 
+  const writeEnabled = Boolean(request.write);
+  const gitStatusCwd = request.cwd ?? workspaceRoot;
+  const beforeGitStatus = writeEnabled ? captureWriteGitStatus(gitStatusCwd) : null;
+
   const taskTurnOptions = {
     resumeThreadId,
     prompt: request.prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    sandbox: writeEnabled ? "workspace-write" : "read-only",
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
@@ -573,6 +583,14 @@ async function executeTaskRun(request) {
     fallbackModelUsed = fallbackModel;
   }
 
+  let writeSummary = null;
+  if (beforeGitStatus) {
+    const afterGitStatus = captureWriteGitStatus(gitStatusCwd);
+    if (afterGitStatus) {
+      writeSummary = summarizeWriteChanges(beforeGitStatus, afterGitStatus);
+    }
+  }
+
   const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
   const failureMessage = result.error?.message ?? result.stderr ?? "";
   const rendered = renderTaskResult(
@@ -584,8 +602,9 @@ async function executeTaskRun(request) {
     {
       title: taskMetadata.title,
       jobId: request.jobId ?? null,
-      write: Boolean(request.write),
-      fallbackModel: fallbackModelUsed
+      write: writeEnabled,
+      fallbackModel: fallbackModelUsed,
+      writeSummary
     }
   );
   const payload = {
@@ -595,7 +614,8 @@ async function executeTaskRun(request) {
     error: result.error?.message ?? null,
     fallbackModel: fallbackModelUsed,
     touchedFiles: result.touchedFiles,
-    reasoningSummary: result.reasoningSummary
+    reasoningSummary: result.reasoningSummary,
+    writeSummary
   };
 
   return {
@@ -607,7 +627,8 @@ async function executeTaskRun(request) {
     summary: firstMeaningfulLine(rawOutput, firstMeaningfulLine(failureMessage, `${taskMetadata.title} finished.`)),
     jobTitle: taskMetadata.title,
     jobClass: "task",
-    write: Boolean(request.write)
+    write: writeEnabled,
+    writeSummary
   };
 }
 

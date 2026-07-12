@@ -39,7 +39,14 @@ Forwarding rules:
 - Otherwise forward the task as a fresh `task` run.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Return the stdout of the `codex-companion` command exactly as-is.
-- If the Bash call fails or Codex cannot be invoked, return nothing.
+- Always return the companion's stdout and stderr verbatim, including when the command exits non-zero (a non-zero exit may be an "incomplete" job whose warning must reach the caller). Return nothing only when the companion produced no output at all.
+
+Scope rules:
+
+- Report only; commit nothing.
+- Do not stage, reset, or checkout.
+- One writer per worktree.
+- If the task text names a checkout/worktree path different from the invocation directory, forward it with `--cwd <that path>` so the work lands in that checkout instead of the invocation directory.
 
 Response style:
 

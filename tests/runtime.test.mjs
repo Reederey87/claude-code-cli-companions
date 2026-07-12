@@ -456,6 +456,156 @@ test("review retries once with the fallback model when Codex rejects the primary
   assert.equal(fakeState.reviewStartCount, 2, "exactly one retry should have called review/start a second time");
 });
 
+test("task surfaces the underlying Codex error when no fallback model is configured", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  delete env.CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL;
+
+  const result = run("node", [SCRIPT, "task", "check failed model"], {
+    cwd: repo,
+    env
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /The 'gpt-5\.6' model is not supported when using Codex with a ChatGPT account\./);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 1, "no retry should happen without a configured fallback model");
+});
+
+test("task retries once with the fallback model when Codex rejects the primary model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "check model fallback"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL: "gpt-5.5"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Handled the requested task/);
+  assert.match(result.stdout, /fallback model `gpt-5\.5`/);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 2, "exactly one retry should have called turn/start a second time");
+});
+
+test("adversarial-review surfaces the underlying Codex error when no fallback model is configured", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  const env = buildEnv(binDir);
+  delete env.CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL;
+
+  const result = run("node", [SCRIPT, "adversarial-review"], {
+    cwd: repo,
+    env
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /The 'gpt-5\.6' model is not supported when using Codex with a ChatGPT account\./);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 1, "no retry should happen without a configured fallback model");
+});
+
+test("adversarial-review retries once with the fallback model when Codex rejects the primary model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  const result = run("node", [SCRIPT, "adversarial-review"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL: "gpt-5.5"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Missing empty-state guard/);
+  assert.match(result.stdout, /fallback model `gpt-5\.5`/);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 2, "exactly one retry should have called turn/start a second time");
+});
+
+test("model fallback retries only once when the fallback model is also rejected", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-error-always");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "check double model rejection"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL: "gpt-5.5"
+    }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /model is not supported when using Codex with a ChatGPT account\./);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 2, "exactly one retry should run even when the fallback model is also rejected");
+});
+
+test("model fallback does not retry when the fallback model matches the requested model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "--model", "gpt-5.5", "check same-model guard"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL: "gpt-5.5"
+    }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /The 'gpt-5\.5' model is not supported when using Codex with a ChatGPT account\./);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 1, "same-model fallback guard should prevent a retry");
+});
+
 test("review accepts the quoted raw argument style for built-in base-branch review", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -824,7 +974,65 @@ test("write task output focuses on the Codex result without generic follow-up hi
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+  assert.match(result.stdout, /^Handled the requested task\.\nTask prompt accepted\.\n/);
+  assert.match(result.stdout, /Write summary:\n- No Git status changes detected \(no edits landed\)\./);
+  assert.doesNotMatch(result.stdout, /follow-up|next steps|\/codex:status/i);
+});
+
+test("write task writeSummary lists files created by the fixture", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "write-file");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const jsonResult = run("node", [SCRIPT, "task", "--write", "--json", "apply the fix"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const payload = JSON.parse(jsonResult.stdout);
+  assert.ok(payload.writeSummary);
+  assert.equal(payload.writeSummary.changedFiles.includes("codex-write.txt"), true);
+
+  // File already exists from the first run; remove it so the second run's before/after
+  // still shows it as a newly untracked change.
+  fs.unlinkSync(path.join(repo, "codex-write.txt"));
+  const rendered = run("node", [SCRIPT, "task", "--write", "apply the fix again"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.match(rendered.stdout, /Write summary:[\s\S]*codex-write\.txt/);
+});
+
+test("write task with no git status changes reports the empty write summary", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const jsonResult = run("node", [SCRIPT, "task", "--write", "--json", "fix the failing test"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const payload = JSON.parse(jsonResult.stdout);
+  assert.deepEqual(payload.writeSummary.changedFiles, []);
+  assert.deepEqual(payload.writeSummary.before, []);
+  assert.deepEqual(payload.writeSummary.after, []);
+
+  const rendered = run("node", [SCRIPT, "task", "--write", "fix the failing test again"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.match(rendered.stdout, /Write summary:\n- No Git status changes detected \(no edits landed\)\./);
 });
 
 test("task --resume acts like --resume-last without leaking the flag into the prompt", () => {
@@ -1269,6 +1477,106 @@ test("status shows phases, hints, and the latest finished job", () => {
   assert.match(result.stdout, /Duration: 1m 5s/);
   assert.match(result.stdout, /Codex session ID: thr_done/);
   assert.match(result.stdout, /Resume in Codex: codex resume thr_done/);
+});
+
+test("status surfaces log-mtime activity and advisory for stale running jobs", async () => {
+  const { enrichJob } = await import("../plugins/codex/scripts/lib/job-control.mjs");
+  const workspace = makeTempDir();
+  const logFile = path.join(workspace, "stale.log");
+  fs.writeFileSync(logFile, "[2026-03-18T15:00:00.000Z] still working\n", "utf8");
+
+  const staleMs = Date.now() - 10 * 60 * 1000;
+  fs.utimesSync(logFile, new Date(staleMs), new Date(staleMs));
+
+  const startedAt = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const enriched = enrichJob({
+    id: "task-stale",
+    kind: "task",
+    status: "running",
+    jobClass: "task",
+    logFile,
+    startedAt,
+    createdAt: startedAt
+  });
+
+  assert.ok(enriched.lastActivityAt);
+  assert.ok(enriched.inactiveFor);
+  const activityMs = Date.parse(enriched.lastActivityAt);
+  assert.ok(Number.isFinite(activityMs));
+  assert.ok(Date.now() - activityMs >= 5 * 60 * 1000);
+  // Pin the source: must be the log mtime, not the startedAt fallback (15m ago).
+  assert.equal(enriched.lastActivityAt, fs.statSync(logFile).mtime.toISOString());
+
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+  const statusLog = path.join(jobsDir, "task-stale.log");
+  fs.copyFileSync(logFile, statusLog);
+  fs.utimesSync(statusLog, new Date(staleMs), new Date(staleMs));
+
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-stale",
+            kind: "task",
+            kindLabel: "rescue",
+            status: "running",
+            title: "Codex Rescue",
+            jobClass: "task",
+            phase: "running",
+            summary: "Long running task",
+            logFile: statusLog,
+            startedAt,
+            createdAt: startedAt,
+            updatedAt: startedAt
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "status"], { cwd: workspace });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /last activity /);
+  assert.match(
+    result.stdout,
+    /no new activity for .+ — job may be stalled or mid long tool call/
+  );
+});
+
+test("enrichJob falls back to startedAt when logFile is missing without throwing", async () => {
+  const { enrichJob } = await import("../plugins/codex/scripts/lib/job-control.mjs");
+  const startedAt = "2026-03-18T15:00:00.000Z";
+  const enriched = enrichJob({
+    id: "task-nolog",
+    kind: "task",
+    status: "running",
+    jobClass: "task",
+    logFile: path.join(makeTempDir(), "does-not-exist.log"),
+    startedAt,
+    createdAt: "2026-03-18T14:59:00.000Z"
+  });
+
+  assert.equal(enriched.lastActivityAt, startedAt);
+  assert.ok(enriched.inactiveFor);
+  assert.doesNotThrow(() =>
+    enrichJob({
+      id: "task-nopath",
+      kind: "task",
+      status: "running",
+      jobClass: "task",
+      startedAt,
+      createdAt: startedAt
+    })
+  );
 });
 
 test("status without a job id only shows jobs from the current Claude session", () => {
