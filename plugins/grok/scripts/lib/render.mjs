@@ -1,3 +1,37 @@
+function formatElapsedSince(startValue) {
+  const start = Date.parse(startValue ?? "");
+  if (!Number.isFinite(start)) {
+    return null;
+  }
+
+  const totalSeconds = Math.max(0, Math.round((Date.now() - start) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+function formatRunningLivenessLine(job) {
+  const liveness = job.liveness ?? "unknown";
+  if (liveness === "alive") {
+    const elapsed = formatElapsedSince(job.startedAt);
+    return elapsed
+      ? `  running (pid alive, ${elapsed} elapsed)`
+      : "  running (pid alive)";
+  }
+  if (liveness === "gone") {
+    return "  ⚠ running but pid gone — likely dead or externally cancelled; check /grok:result";
+  }
+  return "  running (liveness unknown)";
+}
+
 function displayJob(job) {
   const worktreePath = job.worktreeRoot ?? job.request?.cwd ?? null;
   const sharedRoot = job.workspaceRoot ?? null;
@@ -13,6 +47,7 @@ function displayJob(job) {
     job.summary ? `  ${job.summary}` : null,
     showWorktree ? `  worktree: ${worktreePath}` : null,
     job.pid ? `  PID: ${job.pid}` : null,
+    job.status === "running" ? formatRunningLivenessLine(job) : null,
     job.errorMessage && job.status !== "incomplete" ? `  Error: ${job.errorMessage}` : null,
     job.status === "incomplete"
       ? `  ⚠ stopped early (stopReason: ${job.stopReason ?? "unknown"}) — verify diff`

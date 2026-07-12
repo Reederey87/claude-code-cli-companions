@@ -100,6 +100,17 @@ function formatElapsedDuration(startValue, endValue = null) {
   return `${seconds}s`;
 }
 
+function resolveLastActivityAt(job) {
+  try {
+    if (job.logFile) {
+      return fs.statSync(job.logFile).mtime.toISOString();
+    }
+  } catch {
+    // Missing log or stat failure — fall through to timestamps.
+  }
+  return job.startedAt ?? job.createdAt ?? null;
+}
+
 function looksLikeVerificationCommand(line) {
   return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(
     line
@@ -173,6 +184,12 @@ export function enrichJob(job, options = {}) {
         ? formatElapsedDuration(job.startedAt ?? job.createdAt, job.completedAt ?? job.updatedAt)
         : null
   };
+
+  if (job.status === "queued" || job.status === "running") {
+    const lastActivityAt = resolveLastActivityAt(job);
+    enriched.lastActivityAt = lastActivityAt;
+    enriched.inactiveFor = lastActivityAt ? formatElapsedDuration(lastActivityAt) : null;
+  }
 
   return {
     ...enriched,

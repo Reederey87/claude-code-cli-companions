@@ -1,11 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import process from "node:process";
 
 import { renderReviewResult, renderStoredJobResult } from "../plugins/codex/scripts/lib/render.mjs";
+import { isProcessAlive } from "../plugins/grok/scripts/lib/process.mjs";
 import {
   renderJobResult as renderGrokJobResult,
   renderStatus as renderGrokStatus
 } from "../plugins/grok/scripts/lib/render.mjs";
+
+function withRunningLiveness(job) {
+  if (job.status !== "running") {
+    return job;
+  }
+  if (typeof job.grokPid !== "number" || !Number.isFinite(job.grokPid)) {
+    return { ...job, liveness: "unknown" };
+  }
+  return {
+    ...job,
+    liveness: isProcessAlive(job.grokPid) ? "alive" : "gone"
+  };
+}
 
 test("renderReviewResult degrades gracefully when JSON is missing required review fields", () => {
   const output = renderReviewResult(
@@ -96,4 +112,62 @@ test("an old-shaped Grok job record renders without new terminal evidence fields
       rendered: "# Grok\n\nLegacy result.\n"
     })
   );
+});
+
+test("running Grok job with live grokPid renders pid alive", () => {
+  const job = withRunningLiveness({
+    id: "grok-live",
+    kind: "task",
+    status: "running",
+    grokPid: process.pid,
+    startedAt: new Date(Date.now() - 12_000).toISOString()
+  });
+  const output = renderGrokStatus([job]);
+  assert.match(output, /running \(pid alive, \d+s elapsed\)/);
+});
+
+test("running Grok job with exited grokPid renders pid-gone warning", () => {
+  const child = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+    encoding: "utf8"
+  });
+  assert.ok(Number.isFinite(child.pid));
+  assert.equal(isProcessAlive(child.pid), false);
+
+  const job = withRunningLiveness({
+    id: "grok-dead",
+    kind: "task",
+    status: "running",
+    grokPid: child.pid,
+    startedAt: new Date(Date.now() - 30_000).toISOString()
+  });
+  const output = renderGrokStatus([job]);
+  assert.match(
+    output,
+    /⚠ running but pid gone — likely dead or externally cancelled; check \/grok:result/
+  );
+});
+
+test("running Grok job without grokPid renders liveness unknown", () => {
+  const job = withRunningLiveness({
+    id: "grok-unknown",
+    kind: "task",
+    status: "running",
+    grokPid: null,
+    startedAt: new Date().toISOString()
+  });
+  const output = renderGrokStatus([job]);
+  assert.match(output, /running \(liveness unknown\)/);
+});
+
+test("displayJob stays pure for old running records missing liveness fields", () => {
+  assert.doesNotThrow(() => {
+    const output = renderGrokStatus([
+      {
+        id: "grok-legacy-running",
+        kind: "task",
+        status: "running"
+      }
+    ]);
+    assert.match(output, /running \(liveness unknown\)/);
+  });
 });

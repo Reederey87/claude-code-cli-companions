@@ -1271,6 +1271,104 @@ test("status shows phases, hints, and the latest finished job", () => {
   assert.match(result.stdout, /Resume in Codex: codex resume thr_done/);
 });
 
+test("status surfaces log-mtime activity and advisory for stale running jobs", async () => {
+  const { enrichJob } = await import("../plugins/codex/scripts/lib/job-control.mjs");
+  const workspace = makeTempDir();
+  const logFile = path.join(workspace, "stale.log");
+  fs.writeFileSync(logFile, "[2026-03-18T15:00:00.000Z] still working\n", "utf8");
+
+  const staleMs = Date.now() - 10 * 60 * 1000;
+  fs.utimesSync(logFile, new Date(staleMs), new Date(staleMs));
+
+  const startedAt = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const enriched = enrichJob({
+    id: "task-stale",
+    kind: "task",
+    status: "running",
+    jobClass: "task",
+    logFile,
+    startedAt,
+    createdAt: startedAt
+  });
+
+  assert.ok(enriched.lastActivityAt);
+  assert.ok(enriched.inactiveFor);
+  const activityMs = Date.parse(enriched.lastActivityAt);
+  assert.ok(Number.isFinite(activityMs));
+  assert.ok(Date.now() - activityMs >= 5 * 60 * 1000);
+
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+  const statusLog = path.join(jobsDir, "task-stale.log");
+  fs.copyFileSync(logFile, statusLog);
+  fs.utimesSync(statusLog, new Date(staleMs), new Date(staleMs));
+
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-stale",
+            kind: "task",
+            kindLabel: "rescue",
+            status: "running",
+            title: "Codex Rescue",
+            jobClass: "task",
+            phase: "running",
+            summary: "Long running task",
+            logFile: statusLog,
+            startedAt,
+            createdAt: startedAt,
+            updatedAt: startedAt
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "status"], { cwd: workspace });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /last activity /);
+  assert.match(
+    result.stdout,
+    /no new activity for .+ — job may be stalled or mid long tool call/
+  );
+});
+
+test("enrichJob falls back to startedAt when logFile is missing without throwing", async () => {
+  const { enrichJob } = await import("../plugins/codex/scripts/lib/job-control.mjs");
+  const startedAt = "2026-03-18T15:00:00.000Z";
+  const enriched = enrichJob({
+    id: "task-nolog",
+    kind: "task",
+    status: "running",
+    jobClass: "task",
+    logFile: path.join(makeTempDir(), "does-not-exist.log"),
+    startedAt,
+    createdAt: "2026-03-18T14:59:00.000Z"
+  });
+
+  assert.equal(enriched.lastActivityAt, startedAt);
+  assert.ok(enriched.inactiveFor);
+  assert.doesNotThrow(() =>
+    enrichJob({
+      id: "task-nopath",
+      kind: "task",
+      status: "running",
+      jobClass: "task",
+      startedAt,
+      createdAt: startedAt
+    })
+  );
+});
+
 test("status without a job id only shows jobs from the current Claude session", () => {
   const workspace = makeTempDir();
   const stateDir = resolveStateDir(workspace);

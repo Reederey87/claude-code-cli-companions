@@ -18,7 +18,7 @@ import {
   runReadOnlyGrok,
   runWriteGrok
 } from "./lib/grok-cli.mjs";
-import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
+import { binaryAvailable, isProcessAlive, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import {
   renderCleanupReport,
   renderGrokResult,
@@ -595,6 +595,19 @@ async function handleWorker(argv) {
   await runStoredJob(cwd, job);
 }
 
+function attachRunningLiveness(job) {
+  if (!job || job.status !== "running") {
+    return job;
+  }
+  if (typeof job.grokPid !== "number" || !Number.isFinite(job.grokPid)) {
+    return { ...job, liveness: "unknown" };
+  }
+  return {
+    ...job,
+    liveness: isProcessAlive(job.grokPid) ? "alive" : "gone"
+  };
+}
+
 function handleStatus(argv) {
   const { options, positionals } = parseCommand(argv, {
     valueOptions: ["cwd"],
@@ -606,12 +619,15 @@ function handleStatus(argv) {
     throw new Error(`No Grok job found for "${positionals[0]}".`);
   }
   if (job) {
-    output(options.json ? job : renderStatus([job]), options.json);
+    const enriched = attachRunningLiveness(job);
+    output(options.json ? enriched : renderStatus([enriched]), options.json);
     return;
   }
 
   const allJobs = listJobs(cwd);
-  const payload = options.all ? allJobs : filterJobsForCurrentClaudeSession(allJobs);
+  const payload = (options.all ? allJobs : filterJobsForCurrentClaudeSession(allJobs)).map(
+    attachRunningLiveness
+  );
   if (options.json) {
     output(payload, true);
     return;

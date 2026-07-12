@@ -81,6 +81,8 @@ function isStructuredReviewStoredResult(storedJob) {
   );
 }
 
+const INACTIVITY_ADVISORY_MS = 5 * 60 * 1000;
+
 function formatJobLine(job) {
   const parts = [job.id, `${job.status || "unknown"}`];
   if (job.kindLabel) {
@@ -90,6 +92,31 @@ function formatJobLine(job) {
     parts.push(job.title);
   }
   return parts.join(" | ");
+}
+
+function isInactivityAdvisory(job) {
+  if (job.status !== "running" || !job.lastActivityAt) {
+    return false;
+  }
+  const lastActivityMs = Date.parse(job.lastActivityAt);
+  if (!Number.isFinite(lastActivityMs)) {
+    return false;
+  }
+  return Date.now() - lastActivityMs >= INACTIVITY_ADVISORY_MS;
+}
+
+function formatElapsedCell(job) {
+  if (job.status !== "running") {
+    return job.elapsed ?? "";
+  }
+  const parts = [];
+  if (job.elapsed) {
+    parts.push(job.elapsed);
+  }
+  if (job.inactiveFor) {
+    parts.push(`last activity ${job.inactiveFor} ago`);
+  }
+  return parts.join(", ");
 }
 
 function escapeMarkdownCell(value) {
@@ -116,7 +143,7 @@ function appendActiveJobsTable(lines, jobs) {
       actions.push(`/codex:cancel ${job.id}`);
     }
     lines.push(
-      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(formatElapsedCell(job))} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
     );
   }
 }
@@ -129,8 +156,18 @@ function pushJobDetails(lines, job, options = {}) {
   if (job.phase) {
     lines.push(`  Phase: ${job.phase}`);
   }
-  if (options.showElapsed && job.elapsed) {
-    lines.push(`  Elapsed: ${job.elapsed}`);
+  if (options.showElapsed && (job.elapsed || (job.status === "running" && job.inactiveFor))) {
+    if (job.status === "running" && job.inactiveFor) {
+      const elapsedPart = job.elapsed ? `${job.elapsed}, ` : "";
+      lines.push(`  Elapsed: ${elapsedPart}last activity ${job.inactiveFor} ago`);
+      if (isInactivityAdvisory(job)) {
+        lines.push(
+          `  no new activity for ${job.inactiveFor} — job may be stalled or mid long tool call`
+        );
+      }
+    } else if (job.elapsed) {
+      lines.push(`  Elapsed: ${job.elapsed}`);
+    }
   }
   if (options.showDuration && job.duration) {
     lines.push(`  Duration: ${job.duration}`);
