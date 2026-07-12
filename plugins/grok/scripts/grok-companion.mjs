@@ -31,6 +31,7 @@ import {
 import {
   acquireWriteLock,
   appendJobLog,
+  attachRunningLiveness,
   compareAndSwapJobState,
   createJob,
   listJobs,
@@ -593,19 +594,6 @@ async function handleWorker(argv) {
     throw new Error(`No queued Grok job found for ${options["job-id"]}.`);
   }
   await runStoredJob(cwd, job);
-}
-
-function attachRunningLiveness(job) {
-  if (!job || job.status !== "running") {
-    return job;
-  }
-  if (typeof job.grokPid !== "number" || !Number.isFinite(job.grokPid)) {
-    return { ...job, liveness: "unknown" };
-  }
-  return {
-    ...job,
-    liveness: isProcessAlive(job.grokPid) ? "alive" : "gone"
-  };
 }
 
 function handleStatus(argv) {

@@ -1504,6 +1504,8 @@ test("status surfaces log-mtime activity and advisory for stale running jobs", a
   const activityMs = Date.parse(enriched.lastActivityAt);
   assert.ok(Number.isFinite(activityMs));
   assert.ok(Date.now() - activityMs >= 5 * 60 * 1000);
+  // Pin the source: must be the log mtime, not the startedAt fallback (15m ago).
+  assert.equal(enriched.lastActivityAt, fs.statSync(logFile).mtime.toISOString());
 
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");

@@ -9,19 +9,7 @@ import {
   renderJobResult as renderGrokJobResult,
   renderStatus as renderGrokStatus
 } from "../plugins/grok/scripts/lib/render.mjs";
-
-function withRunningLiveness(job) {
-  if (job.status !== "running") {
-    return job;
-  }
-  if (typeof job.grokPid !== "number" || !Number.isFinite(job.grokPid)) {
-    return { ...job, liveness: "unknown" };
-  }
-  return {
-    ...job,
-    liveness: isProcessAlive(job.grokPid) ? "alive" : "gone"
-  };
-}
+import { attachRunningLiveness as withRunningLiveness } from "../plugins/grok/scripts/lib/state.mjs";
 
 test("renderReviewResult degrades gracefully when JSON is missing required review fields", () => {
   const output = renderReviewResult(

@@ -88,6 +88,23 @@ export function readJob(cwd, jobId) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
+/**
+ * Annotate a running job with pid liveness for status display.
+ * alive/gone from kill(pid, 0); unknown when no grokPid was recorded.
+ */
+export function attachRunningLiveness(job) {
+  if (!job || job.status !== "running") {
+    return job;
+  }
+  if (typeof job.grokPid !== "number" || !Number.isFinite(job.grokPid)) {
+    return { ...job, liveness: "unknown" };
+  }
+  return {
+    ...job,
+    liveness: isProcessAlive(job.grokPid) ? "alive" : "gone"
+  };
+}
+
 export function isActiveJob(job) {
   return Boolean(job) && (job.status === "queued" || job.status === "running");
 }
