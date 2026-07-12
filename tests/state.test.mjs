@@ -25,6 +25,7 @@ import {
   writeJob
 } from "../plugins/grok/scripts/lib/state.mjs";
 import { resolveWorkspace } from "../plugins/grok/scripts/lib/workspace.mjs";
+import { ensureGitRepository } from "../plugins/codex/scripts/lib/git.mjs";
 
 delete process.env.CLAUDE_PLUGIN_DATA;
 delete process.env.CODEX_COMPANION_SESSION_ID;
@@ -352,6 +353,32 @@ test("non-worktree repos keep the same grok jobs dir key as before (shared === t
     const legacyHash = createHash("sha256").update(resolveWorkspace(cwd)).digest("hex").slice(0, 32);
     const expectedLegacy = path.join(pluginData, "jobs", legacyHash);
     assert.equal(sharedDir, expectedLegacy);
+  } finally {
+    if (previous == null) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previous;
+    }
+  }
+});
+
+test("non-worktree repos keep the same codex state dir key as before (shared === toplevel)", () => {
+  const pluginData = makeTempDir("codex-key-stable-");
+  const previous = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = pluginData;
+  const cwd = makeTempDir("plain-repo-");
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "a.js"), "1\n");
+  run("git", ["add", "a.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+
+  try {
+    const toplevel = ensureGitRepository(cwd);
+    const canonical = fs.realpathSync.native(toplevel);
+    const slug = path.basename(toplevel).replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+    const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+    const expectedLegacy = path.join(pluginData, "state", `${slug}-${hash}`);
+    assert.equal(resolveStateDir(cwd), expectedLegacy);
   } finally {
     if (previous == null) {
       delete process.env.CLAUDE_PLUGIN_DATA;

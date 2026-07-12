@@ -637,7 +637,10 @@ function handleStatus(argv) {
   if (!options.all) {
     const hiddenCount = allJobs.length - payload.length;
     if (hiddenCount > 0) {
-      rendered = `${rendered.trimEnd()}\n\n${hiddenCount} other job(s) from other sessions/worktrees — run /grok:status --all\n`;
+      const note = `${hiddenCount} other job(s) from other sessions/worktrees — run /grok:status --all`;
+      rendered = payload.length === 0
+        ? `# Grok Status\n\n${note}\n`
+        : `${rendered.trimEnd()}\n\n${note}\n`;
     }
   }
   output(rendered, false);
