@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { renderReviewResult, renderStoredJobResult } from "../plugins/codex/scripts/lib/render.mjs";
+import {
+  renderJobResult as renderGrokJobResult,
+  renderStatus as renderGrokStatus
+} from "../plugins/grok/scripts/lib/render.mjs";
 
 test("renderReviewResult degrades gracefully when JSON is missing required review fields", () => {
   const output = renderReviewResult(
@@ -56,4 +60,40 @@ test("renderStoredJobResult prefers rendered output for structured review jobs",
   assert.doesNotMatch(output, /^\{/);
   assert.match(output, /Codex session ID: thr_123/);
   assert.match(output, /Resume in Codex: codex resume thr_123/);
+});
+
+test("renderJobResult renders the incomplete banner and status legend", () => {
+  const output = renderGrokJobResult({
+    id: "grok-123",
+    status: "incomplete",
+    stopReason: "Cancelled",
+    rendered: "# Grok Rescue\n\nPartial result.\n"
+  });
+
+  assert.match(output, /⚠ INCOMPLETE — Grok stopped early \(stopReason: Cancelled\)\./);
+  assert.match(output, /Changes may be partial\. Verify against git status\/diff/);
+  assert.match(output, /Statuses: succeeded = clean EndTurn; incomplete = early stop, verify diff;/);
+});
+
+test("displayJob renders an incomplete warning through the status report", () => {
+  const output = renderGrokStatus([
+    {
+      id: "grok-123",
+      kind: "task",
+      status: "incomplete",
+      stopReason: "Cancelled"
+    }
+  ]);
+
+  assert.match(output, /  ⚠ stopped early \(stopReason: Cancelled\) — verify diff/);
+});
+
+test("an old-shaped Grok job record renders without new terminal evidence fields", () => {
+  assert.doesNotThrow(() =>
+    renderGrokJobResult({
+      id: "grok-old",
+      status: "succeeded",
+      rendered: "# Grok\n\nLegacy result.\n"
+    })
+  );
 });

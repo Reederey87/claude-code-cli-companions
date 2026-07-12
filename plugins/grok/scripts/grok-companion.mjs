@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import { collectReviewContext } from "./lib/git-context.mjs";
 import {
+  classifyGrokCompletion,
   deleteGrokSession,
   getGrokAvailability,
   getGrokInspect,
@@ -21,6 +22,7 @@ import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process
 import {
   renderCleanupReport,
   renderGrokResult,
+  renderIncompleteBanner,
   renderJobResult,
   renderSetup,
   renderStatus,
@@ -286,14 +288,25 @@ async function runStoredJob(cwd, job) {
           onPid
         });
     const writeSummary = before ? summarizeWriteChanges(before, captureGitStatus(running.request.cwd)) : null;
+    const status = classifyGrokCompletion({
+      exitStatus: grokResult.status,
+      stopReason: grokResult.output.stopReason
+    });
     const rendered = [
+      ...(status === "incomplete" ? [...renderIncompleteBanner(grokResult.output.stopReason), ""] : []),
       renderGrokResult(grokResult, jobHeading(running.kind)).trimEnd(),
       ...(writeSummary ? ["", ...renderWriteSummary(writeSummary)] : [])
     ].join("\n") + "\n";
-    const status = grokResult.status === 0 ? "succeeded" : "failed";
+    const stopReason = grokResult.output.stopReason ?? null;
     const completionResult = compareAndSwapJobState(cwd, running.id, "running", {
       ...running,
       status,
+      stopReason,
+      evidence: {
+        stopReason,
+        exitStatus: grokResult.status,
+        changedFiles: writeSummary ? writeSummary.changedFiles : null
+      },
       pid: null,
       grokPid: grokResult.pid ?? running.grokPid ?? null,
       completedAt: new Date().toISOString(),
@@ -310,14 +323,24 @@ async function runStoredJob(cwd, job) {
       },
       writeSummary,
       rendered,
-      errorMessage: status === "failed" ? grokResult.stderr.trim() || `Grok exited with status ${grokResult.status}.` : null
+      errorMessage:
+        status === "failed"
+          ? grokResult.stderr.trim() || `Grok exited with status ${grokResult.status}.`
+          : status === "incomplete"
+            ? `Grok stopped early (stopReason: ${stopReason ?? "unknown"}).`
+            : null
     });
     if (!completionResult.success) {
       appendJobLog(cwd, running.id, "Job was cancelled while Grok was running.");
       return completionResult.job ?? running;
     }
     const completed = completionResult.job;
-    appendJobLog(cwd, completed.id, `${status === "succeeded" ? "Completed" : "Failed"} ${completed.kind} job.`);
+    const completionKind = status === "succeeded"
+      ? "Completed"
+      : status === "incomplete"
+        ? "Completed with incomplete status"
+        : "Failed";
+    appendJobLog(cwd, completed.id, `${completionKind} ${completed.kind} job.`);
     return completed;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -412,7 +435,10 @@ async function runForegroundJob(cwd, request, asJson) {
   }
   const completed = await runStoredJob(cwd, job);
   output(asJson ? completed : completed.rendered, asJson);
-  if (completed.status !== "succeeded") {
+  // Incomplete gets a distinct exit code because the diff often landed — callers must verify, not blindly retry.
+  if (completed.status === "incomplete") {
+    process.exitCode = 2;
+  } else if (completed.status !== "succeeded") {
     process.exitCode = 1;
   }
 }

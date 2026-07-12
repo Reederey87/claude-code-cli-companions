@@ -3,7 +3,10 @@ function displayJob(job) {
     `- ${job.id} | ${job.kind} | ${job.status}`,
     job.summary ? `  ${job.summary}` : null,
     job.pid ? `  PID: ${job.pid}` : null,
-    job.errorMessage ? `  Error: ${job.errorMessage}` : null
+    job.errorMessage && job.status !== "incomplete" ? `  Error: ${job.errorMessage}` : null,
+    job.status === "incomplete"
+      ? `  ⚠ stopped early (stopReason: ${job.stopReason ?? "unknown"}) — verify diff`
+      : null
   ]
     .filter(Boolean)
     .join("\n");
@@ -50,7 +53,14 @@ export function renderWriteSummary(writeSummary) {
     "Write summary:",
     ...(writeSummary.changedFiles.length > 0
       ? writeSummary.changedFiles.map((filePath) => `- ${filePath}`)
-      : ["- No Git status changes detected."])
+      : ["- No Git status changes detected (no edits landed)."])
+  ];
+}
+
+export function renderIncompleteBanner(stopReason) {
+  return [
+    `⚠ INCOMPLETE — Grok stopped early (stopReason: ${stopReason ?? "unknown"}).`,
+    "Changes may be partial. Verify against git status/diff before trusting any success narrative."
   ];
 }
 
@@ -92,9 +102,12 @@ export function renderJobResult(job) {
     `# Grok Result`,
     "",
     `Job: ${job.id}`,
-    `Status: ${job.status}`,
-    ""
+    `Status: ${job.status}`
   ];
+  if (job.status === "incomplete" && !job.rendered?.startsWith("⚠ INCOMPLETE")) {
+    lines.push("", ...renderIncompleteBanner(job.stopReason));
+  }
+  lines.push("");
   if (job.rendered) {
     lines.push(job.rendered.trimEnd());
   } else if (job.errorMessage) {
@@ -104,6 +117,12 @@ export function renderJobResult(job) {
   }
   if (job.writeSummary && !job.rendered) {
     lines.push("", ...renderWriteSummary(job.writeSummary));
+  }
+  if (job.status === "incomplete") {
+    lines.push(
+      "",
+      "Statuses: succeeded = clean EndTurn; incomplete = early stop, verify diff; failed = crashed; cancelled = user-cancelled."
+    );
   }
   return `${lines.join("\n")}\n`;
 }

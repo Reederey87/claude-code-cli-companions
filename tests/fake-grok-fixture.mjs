@@ -60,13 +60,21 @@ if (args.includes("sessions")) {
   process.exit(0);
 }
 
-if (behavior === "write" || behavior === "delayed-write") {
+if (behavior === "write" || behavior === "delayed-write" || behavior === "cancelled-with-edits") {
   fs.writeFileSync(path.join(process.cwd(), "grok-write.txt"), "changed by fake Grok\\n", "utf8");
 }
 
 const output = behavior === "malformed-json"
   ? "not valid json"
-  : JSON.stringify({ answer: "fake response", prompt: args[args.indexOf("-p") + 1] || null });
+  : behavior === "cancelled" || behavior === "cancelled-with-edits" || behavior === "max-turns"
+    ? JSON.stringify({ text: "", stopReason: "Cancelled" })
+    : JSON.stringify({ text: "fake response", stopReason: "EndTurn", prompt: args[args.indexOf("-p") + 1] || null });
+
+if (behavior === "max-turns") {
+  console.log(output);
+  console.error("Error: max turns reached");
+  process.exit(1);
+}
 
 if (behavior === "delayed" || behavior === "delayed-write") {
   setTimeout(() => {

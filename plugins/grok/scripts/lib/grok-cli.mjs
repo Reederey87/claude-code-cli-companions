@@ -122,17 +122,35 @@ export function resolveMaxTurns(explicitMaxTurns, env = process.env) {
 export function parseGrokOutput(stdout) {
   const rawOutput = String(stdout ?? "").trim();
   if (!rawOutput) {
-    return { parsed: null, rawOutput: "", parseError: "Grok produced no stdout." };
+    return { parsed: null, rawOutput: "", parseError: "Grok produced no stdout.", stopReason: null };
   }
   try {
-    return { parsed: JSON.parse(rawOutput), rawOutput, parseError: null };
+    const parsed = JSON.parse(rawOutput);
+    const stopReason = typeof parsed?.stopReason === "string" && parsed.stopReason.trim() ? parsed.stopReason : null;
+    return { parsed, rawOutput, parseError: null, stopReason };
   } catch (error) {
     return {
       parsed: null,
       rawOutput,
-      parseError: error instanceof Error ? error.message : "Grok returned malformed JSON."
+      parseError: error instanceof Error ? error.message : "Grok returned malformed JSON.",
+      stopReason: null
     };
   }
+}
+
+/**
+ * Exit code alone is untrustworthy: Grok exits 0 + Cancelled when killed externally and 1 + Cancelled on max-turns, so stopReason is the source of truth.
+ */
+export function classifyGrokCompletion({ exitStatus, stopReason }) {
+  if (typeof stopReason === "string" && stopReason.trim()) {
+    // Accept both the observed PascalCase ("EndTurn") and the ACP wire format ("end_turn").
+    const isCleanStop = stopReason.toLowerCase().replace(/_/g, "") === "endturn";
+    return isCleanStop ? "succeeded" : "incomplete";
+  }
+  if (exitStatus === 0) {
+    return "incomplete";
+  }
+  return "failed";
 }
 
 export function getGrokAvailability(cwd) {

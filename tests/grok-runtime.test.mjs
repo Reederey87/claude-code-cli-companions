@@ -337,12 +337,89 @@ test("malformed Grok JSON is preserved as raw output", () => {
   const fixture = createEnvironment({ behavior: "malformed-json" });
   const result = invoke(fixture, ["ask", "return", "a", "summary", "--json"]);
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 2, result.stderr);
   const job = JSON.parse(result.stdout);
-  assert.equal(job.status, "succeeded");
+  assert.equal(job.status, "incomplete");
   assert.equal(job.result.grok.parsed, null);
   assert.equal(job.result.grok.rawOutput, "not valid json");
   assert.match(job.result.grok.parseError, /Unexpected token/i);
+  assert.match(job.rendered, /INCOMPLETE/);
+});
+
+test("cancelled task jobs are incomplete and use the distinct foreground exit code", () => {
+  const fixture = createEnvironment({ behavior: "cancelled" });
+  const result = invoke(fixture, ["task", "--fresh", "attempt", "the", "task", "--json"]);
+
+  assert.equal(result.status, 2, result.stderr);
+  const job = JSON.parse(result.stdout);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.evidence.stopReason, "Cancelled");
+  assert.equal(job.stopReason, "Cancelled");
+  assert.match(job.rendered, /INCOMPLETE/);
+});
+
+test("cancelled write jobs preserve incomplete edits and render their changed files", () => {
+  const fixture = createEnvironment({ behavior: "cancelled-with-edits" });
+  initGitRepo(fixture.workspace);
+  const result = invoke(fixture, [
+    "task",
+    "--fresh",
+    "--write",
+    "--always-approve",
+    "attempt",
+    "the",
+    "task",
+    "--json"
+  ]);
+
+  assert.equal(result.status, 2, result.stderr);
+  const job = JSON.parse(result.stdout);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.writeSummary.changedFiles.includes("grok-write.txt"), true);
+  assert.match(job.rendered, /INCOMPLETE/);
+  assert.match(job.rendered, /grok-write\.txt/);
+});
+
+test("max-turns exhaustion is incomplete despite Grok exiting 1", () => {
+  const fixture = createEnvironment({ behavior: "max-turns" });
+  const result = invoke(fixture, ["task", "--fresh", "attempt", "the", "task", "--json"]);
+
+  assert.equal(result.status, 2, result.stderr);
+  const job = JSON.parse(result.stdout);
+  assert.equal(job.status, "incomplete");
+  assert.equal(job.evidence.exitStatus, 1);
+  assert.equal(job.evidence.stopReason, "Cancelled");
+});
+
+test("a Grok crash without JSON remains failed", () => {
+  const fixture = createEnvironment({ behavior: "failure" });
+  const result = invoke(fixture, ["task", "--fresh", "attempt", "the", "task", "--json"]);
+
+  assert.equal(result.status, 1, result.stderr);
+  const job = JSON.parse(result.stdout);
+  assert.equal(job.status, "failed");
+  assert.equal(job.evidence.stopReason, null);
+  assert.equal(job.evidence.exitStatus, 3);
+});
+
+test("a clean write job with no changes succeeds and explains that no edits landed", () => {
+  const fixture = createEnvironment();
+  initGitRepo(fixture.workspace);
+  const result = invoke(fixture, [
+    "task",
+    "--fresh",
+    "--write",
+    "--always-approve",
+    "inspect",
+    "without",
+    "editing",
+    "--json"
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const job = JSON.parse(result.stdout);
+  assert.equal(job.status, "succeeded");
+  assert.match(job.rendered, /No Git status changes detected \(no edits landed\)/);
 });
 
 test("review gathers bounded working-tree and base-branch context without untracked contents", () => {
@@ -444,7 +521,7 @@ test("background jobs persist a queued record and status/result retrieve scoped 
   assert.equal(result.status, 0, result.stderr);
   const completed = JSON.parse(result.stdout);
   assert.equal(completed.status, "succeeded");
-  assert.equal(completed.result.grok.parsed.answer, "fake response");
+  assert.equal(completed.result.grok.parsed.text, "fake response");
   assert.match(completed.rendered, /Grok Rescue/);
 });
 
