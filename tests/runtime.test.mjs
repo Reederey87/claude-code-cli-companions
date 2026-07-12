@@ -456,6 +456,156 @@ test("review retries once with the fallback model when Codex rejects the primary
   assert.equal(fakeState.reviewStartCount, 2, "exactly one retry should have called review/start a second time");
 });
 
+test("task surfaces the underlying Codex error when no fallback model is configured", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  delete env.CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL;
+
+  const result = run("node", [SCRIPT, "task", "check failed model"], {
+    cwd: repo,
+    env
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /The 'gpt-5\.6' model is not supported when using Codex with a ChatGPT account\./);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 1, "no retry should happen without a configured fallback model");
+});
+
+test("task retries once with the fallback model when Codex rejects the primary model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "check model fallback"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL: "gpt-5.5"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Handled the requested task/);
+  assert.match(result.stdout, /fallback model `gpt-5\.5`/);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 2, "exactly one retry should have called turn/start a second time");
+});
+
+test("adversarial-review surfaces the underlying Codex error when no fallback model is configured", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  const env = buildEnv(binDir);
+  delete env.CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL;
+
+  const result = run("node", [SCRIPT, "adversarial-review"], {
+    cwd: repo,
+    env
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /The 'gpt-5\.6' model is not supported when using Codex with a ChatGPT account\./);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 1, "no retry should happen without a configured fallback model");
+});
+
+test("adversarial-review retries once with the fallback model when Codex rejects the primary model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  const result = run("node", [SCRIPT, "adversarial-review"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL: "gpt-5.5"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Missing empty-state guard/);
+  assert.match(result.stdout, /fallback model `gpt-5\.5`/);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 2, "exactly one retry should have called turn/start a second time");
+});
+
+test("model fallback retries only once when the fallback model is also rejected", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-error-always");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "check double model rejection"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL: "gpt-5.5"
+    }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /model is not supported when using Codex with a ChatGPT account\./);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 2, "exactly one retry should run even when the fallback model is also rejected");
+});
+
+test("model fallback does not retry when the fallback model matches the requested model", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "review-model-error");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "--model", "gpt-5.5", "check same-model guard"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CLAUDE_PLUGIN_OPTION_FALLBACK_MODEL: "gpt-5.5"
+    }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /The 'gpt-5\.5' model is not supported when using Codex with a ChatGPT account\./);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.turnStartCount, 1, "same-model fallback guard should prevent a retry");
+});
+
 test("review accepts the quoted raw argument style for built-in base-branch review", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

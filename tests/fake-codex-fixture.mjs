@@ -17,6 +17,7 @@ const readline = require("node:readline");
 	const BEHAVIOR = ${JSON.stringify(behavior)};
 	const interruptibleTurns = new Map();
 	let reviewStartCount = 0;
+	let turnStartCount = 0;
 
 	function loadState() {
 	  if (!fs.existsSync(STATE_PATH)) {
@@ -173,6 +174,30 @@ function emitTurnCompleted(threadId, turnId, item) {
     }
   }
   send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "completed") } });
+}
+
+function emitModelUnsupportedTurn(threadId, turnId, model) {
+  const modelLabel = model || "gpt-5.6";
+  send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+  send({
+    method: "error",
+    params: {
+      threadId,
+      turnId,
+      error: {
+        type: "invalid_request_error",
+        message: "The '" + modelLabel + "' model is not supported when using Codex with a ChatGPT account."
+      }
+    }
+  });
+  send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "failed") } });
+}
+
+function shouldRejectModelOnAttempt(attempt) {
+  if (BEHAVIOR === "model-error-always") {
+    return true;
+  }
+  return BEHAVIOR === "review-model-error" && attempt === 1;
 }
 
 function emitTurnCompletedLater(threadId, turnId, item, delayMs) {
@@ -447,20 +472,8 @@ rl.on("line", (line) => {
         state.reviewStartCount = reviewStartCount;
         saveState(state);
 
-        if (BEHAVIOR === "review-model-error" && reviewStartCount === 1) {
-          send({ method: "turn/started", params: { threadId: reviewThread.id, turn: buildTurn(turnId) } });
-          send({
-            method: "error",
-            params: {
-              threadId: reviewThread.id,
-              turnId,
-              error: {
-                type: "invalid_request_error",
-                message: "The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account."
-              }
-            }
-          });
-          send({ method: "turn/completed", params: { threadId: reviewThread.id, turn: buildTurn(turnId, "failed") } });
+        if (shouldRejectModelOnAttempt(reviewStartCount)) {
+          emitModelUnsupportedTurn(reviewThread.id, turnId, message.params.model);
           break;
         }
 
@@ -495,6 +508,8 @@ rl.on("line", (line) => {
           .join("\\n");
         const turnId = nextTurnId(state);
         thread.updatedAt = now();
+        turnStartCount += 1;
+        state.turnStartCount = turnStartCount;
 	        state.lastTurnStart = {
 	          threadId: message.params.threadId,
 	          turnId,
@@ -504,6 +519,11 @@ rl.on("line", (line) => {
 	        };
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+
+        if (shouldRejectModelOnAttempt(turnStartCount)) {
+          emitModelUnsupportedTurn(thread.id, turnId, message.params.model);
+          break;
+        }
 
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
           ? structuredReviewPayload(prompt)
