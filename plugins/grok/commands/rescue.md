@@ -15,7 +15,7 @@ Execution mode:
 
 - If the request includes `--background`, run the `grok:grok-rescue` subagent in the background.
 - If the request includes `--wait`, run the `grok:grok-rescue` subagent in the foreground.
-- If neither flag is present, default to foreground.
+- If neither flag is present, default to foreground for read-only tasks and to background for `--write` tasks (foreground write jobs die with a misleading Cancelled stop when the parent call is cut).
 - `--background` and `--wait` are execution flags for Claude Code. Do not forward them to `task`, and do not treat them as part of the natural-language task text.
 - `--model`, `--effort`, `--max-turns`, and `--json-schema` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
 - `--resume` and `--fresh` are routing controls. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
@@ -44,6 +44,7 @@ Write safety:
 - Forward `--write` when the user explicitly supplied it, even when the task wording is ambiguous.
 - Forward `--always-approve` only when the user explicitly supplied it. Treat `--yolo` as its alias.
 - A background write task requires explicit `--always-approve` or `--yolo`. Do not start it without that approval.
+- A job may finish with status incomplete — verify the write summary / git diff before trusting the narrative.
 - If the user did not supply a request, ask what Grok should investigate or fix.
 
 Operating rules:

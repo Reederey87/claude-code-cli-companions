@@ -179,6 +179,66 @@ export function getWorkingTreeState(cwd) {
   };
 }
 
+/**
+ * Capture paths that differ from HEAD plus untracked files.
+ * Returns null when cwd is not a Git work tree (write-summary callers skip silently).
+ * @param {string} cwd
+ * @returns {Set<string> | null}
+ */
+export function captureWriteGitStatus(cwd) {
+  const inside = git(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.error || inside.status !== 0 || inside.stdout.trim() !== "true") {
+    return null;
+  }
+
+  const paths = new Set();
+  const hasHead = git(cwd, ["rev-parse", "--verify", "HEAD"]);
+  if (hasHead.status === 0) {
+    const diff = git(cwd, ["diff", "--name-only", "HEAD", "-z"]);
+    if (diff.error) {
+      throw diff.error;
+    }
+    if (diff.status !== 0) {
+      throw new Error(diff.stderr.trim() || "Unable to capture Git diff for this write task.");
+    }
+    for (const entry of String(diff.stdout ?? "").split("\0")) {
+      if (entry) {
+        paths.add(entry);
+      }
+    }
+  }
+
+  const untracked = git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (untracked.error) {
+    throw untracked.error;
+  }
+  if (untracked.status !== 0) {
+    throw new Error(untracked.stderr.trim() || "Unable to capture untracked files for this write task.");
+  }
+  for (const entry of String(untracked.stdout ?? "").split("\0")) {
+    if (entry) {
+      paths.add(entry);
+    }
+  }
+  return paths;
+}
+
+/**
+ * @param {Set<string>} before
+ * @param {Set<string>} after
+ */
+export function summarizeWriteChanges(before, after) {
+  const changedFiles = [
+    ...[...after].filter((filePath) => !before.has(filePath)),
+    ...[...before].filter((filePath) => !after.has(filePath))
+  ].sort();
+  return {
+    before: [...before].sort(),
+    after: [...after].sort(),
+    changedFiles
+  };
+}
+
 export function resolveReviewTarget(cwd, options = {}) {
   ensureGitRepository(cwd);
 

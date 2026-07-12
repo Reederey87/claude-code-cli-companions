@@ -974,7 +974,65 @@ test("write task output focuses on the Codex result without generic follow-up hi
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+  assert.match(result.stdout, /^Handled the requested task\.\nTask prompt accepted\.\n/);
+  assert.match(result.stdout, /Write summary:\n- No Git status changes detected \(no edits landed\)\./);
+  assert.doesNotMatch(result.stdout, /follow-up|next steps|\/codex:status/i);
+});
+
+test("write task writeSummary lists files created by the fixture", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "write-file");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const jsonResult = run("node", [SCRIPT, "task", "--write", "--json", "apply the fix"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const payload = JSON.parse(jsonResult.stdout);
+  assert.ok(payload.writeSummary);
+  assert.equal(payload.writeSummary.changedFiles.includes("codex-write.txt"), true);
+
+  // File already exists from the first run; remove it so the second run's before/after
+  // still shows it as a newly untracked change.
+  fs.unlinkSync(path.join(repo, "codex-write.txt"));
+  const rendered = run("node", [SCRIPT, "task", "--write", "apply the fix again"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.match(rendered.stdout, /Write summary:[\s\S]*codex-write\.txt/);
+});
+
+test("write task with no git status changes reports the empty write summary", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const jsonResult = run("node", [SCRIPT, "task", "--write", "--json", "fix the failing test"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const payload = JSON.parse(jsonResult.stdout);
+  assert.deepEqual(payload.writeSummary.changedFiles, []);
+  assert.deepEqual(payload.writeSummary.before, []);
+  assert.deepEqual(payload.writeSummary.after, []);
+
+  const rendered = run("node", [SCRIPT, "task", "--write", "fix the failing test again"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.match(rendered.stdout, /Write summary:\n- No Git status changes detected \(no edits landed\)\./);
 });
 
 test("task --resume acts like --resume-last without leaking the flag into the prompt", () => {

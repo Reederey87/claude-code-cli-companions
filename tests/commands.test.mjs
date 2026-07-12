@@ -138,7 +138,12 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(agent, /If the user asks for `spark`, map that to `--model gpt-5\.3-codex-spark`/i);
   assert.match(agent, /If the user asks for a concrete model name such as `gpt-5\.4-mini`, pass it through with `--model`/i);
   assert.match(agent, /Return the stdout of the `codex-companion` command exactly as-is/i);
-  assert.match(agent, /If the Bash call fails or Codex cannot be invoked, return nothing/i);
+  assert.match(agent, /Always return the companion's stdout and stderr verbatim, including when the command exits non-zero/i);
+  assert.match(agent, /Return nothing only when the companion produced no output at all/i);
+  assert.match(agent, /Report only; commit nothing/i);
+  assert.match(agent, /Do not stage, reset, or checkout/i);
+  assert.match(agent, /One writer per worktree/i);
+  assert.match(agent, /--cwd <that path>/i);
   assert.match(agent, /gpt-5-4-prompting/);
   assert.match(agent, /only to tighten the user's request into a better Codex prompt/i);
   assert.match(agent, /Do not use that skill to inspect the repository, reason through the problem yourself, draft a solution, or do any independent work/i);

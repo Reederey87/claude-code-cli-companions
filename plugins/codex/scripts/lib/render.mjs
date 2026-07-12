@@ -382,19 +382,40 @@ export function renderNativeReviewResult(result, meta) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
+export function renderWriteSummary(writeSummary) {
+  return [
+    "Write summary:",
+    ...(writeSummary.changedFiles.length > 0
+      ? writeSummary.changedFiles.map((filePath) => `- ${filePath}`)
+      : ["- No Git status changes detected (no edits landed)."])
+  ];
+}
+
 export function renderTaskResult(parsedResult, meta) {
   const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
   const fallbackNote = meta?.fallbackModel
     ? `\nNote: retried with fallback model \`${meta.fallbackModel}\` after the primary model was rejected.\n`
     : "";
+  const writeSummaryLines =
+    meta?.writeSummary && typeof meta.writeSummary === "object"
+      ? ["", ...renderWriteSummary(meta.writeSummary)]
+      : [];
 
   if (rawOutput) {
     const output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
-    return `${output}${fallbackNote}`;
+    const withSummary =
+      writeSummaryLines.length > 0
+        ? `${output.trimEnd()}\n${writeSummaryLines.join("\n")}\n`
+        : output;
+    return `${withSummary}${fallbackNote}`;
   }
 
   const message = String(parsedResult?.failureMessage ?? "").trim() || "Codex did not return a final message.";
-  return `${message}\n${fallbackNote}`;
+  const withSummary =
+    writeSummaryLines.length > 0
+      ? `${message}\n${writeSummaryLines.join("\n")}\n`
+      : `${message}\n`;
+  return `${withSummary}${fallbackNote}`;
 }
 
 export function renderStatusReport(report) {
@@ -478,7 +499,11 @@ export function renderStoredJobResult(job, storedJob) {
     (typeof storedJob?.result?.codex?.stdout === "string" && storedJob.result.codex.stdout) ||
     "";
   if (rawOutput) {
-    const output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    let output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    const writeSummary = storedJob?.result?.writeSummary ?? storedJob?.writeSummary ?? null;
+    if (writeSummary && typeof writeSummary === "object") {
+      output = `${output.trimEnd()}\n\n${renderWriteSummary(writeSummary).join("\n")}\n`;
+    }
     if (!threadId) {
       return output;
     }

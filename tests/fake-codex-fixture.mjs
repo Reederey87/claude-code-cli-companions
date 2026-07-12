@@ -273,6 +273,14 @@ function taskPayload(prompt, resume) {
   return "Handled the requested task.\\nTask prompt accepted.";
 }
 
+function maybeWriteFixtureFile(cwd) {
+  if (BEHAVIOR !== "write-file") {
+    return;
+  }
+  const target = path.join(cwd || process.cwd(), "codex-write.txt");
+  fs.writeFileSync(target, "written by fake codex\\n", "utf8");
+}
+
 const args = process.argv.slice(2);
 if (args[0] === "--version") {
   console.log("codex-cli test");
@@ -524,6 +532,8 @@ rl.on("line", (line) => {
           emitModelUnsupportedTurn(thread.id, turnId, message.params.model);
           break;
         }
+
+        maybeWriteFixtureFile(thread.cwd);
 
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
           ? structuredReviewPayload(prompt)
