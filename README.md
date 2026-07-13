@@ -1,6 +1,14 @@
-# Coding CLI Companions for Claude Code
+# Claude Code CLI Companions
 
-Use Codex and Grok Build from inside Claude Code for code reviews, delegated tasks, and second-opinion analysis.
+Bring Codex and Grok Build directly into the Claude Code CLI for code reviews,
+delegated tasks, and independent second opinions.
+
+> [!IMPORTANT]
+> This fork extends
+> [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) with a
+> first-class **Grok Build integration**. Install `/grok:*` commands to ask,
+> review, diagnose, and run explicitly approved rescue tasks without leaving
+> Claude Code.
 
 This repository packages two Claude Code plugins that wrap local coding CLIs:
 
@@ -41,19 +49,20 @@ This repository packages two Claude Code plugins that wrap local coding CLIs:
 
 ## Install
 
-### Installing both Codex and Grok from this fork
+### Install both Codex and Grok from this fork
 
 If you want to use both plugins from this repository's marketplace (`coding-cli-companions`):
 
 ```text
-/plugin marketplace add openai/codex-plugin-cc
-/plugin install codex@openai-codex
+/plugin marketplace add Reederey87/claude-code-cli-companions
+/plugin install codex@coding-cli-companions
+/plugin install grok@coding-cli-companions
 ```
 
 Or, if you are testing from a local checkout:
 
 ```text
-/plugin marketplace add /path/to/codex-plugin-cc
+/plugin marketplace add /path/to/claude-code-cli-companions
 /plugin install codex@coding-cli-companions
 /plugin install grok@coding-cli-companions
 ```
@@ -80,8 +89,16 @@ After install, you should see:
 
 - the slash commands listed below
 - the `codex:codex-rescue` subagent in `/agents`
+- the `grok:grok-rescue` subagent in `/agents`
 
-One simple first run is:
+Start with the fork-specific Grok integration:
+
+```bash
+/grok:setup
+/grok:ask Explain this repository and identify its highest-risk code paths.
+```
+
+Or run a Codex review:
 
 ```bash
 /codex:review --background
@@ -490,7 +507,7 @@ This project follows the [Contributor Covenant Code of Conduct](./CODE_OF_CONDUC
 
 ## Security
 
-Found a vulnerability? **Do not open a public issue.** See [SECURITY.md](./SECURITY.md) and report it privately via [GitHub Security Advisories](https://github.com/Reederey87/codex-plugin-cc/security/advisories/new).
+Found a vulnerability? **Do not open a public issue.** See [SECURITY.md](./SECURITY.md) and report it privately via [GitHub Security Advisories](https://github.com/Reederey87/claude-code-cli-companions/security/advisories/new).
 
 ## License
 

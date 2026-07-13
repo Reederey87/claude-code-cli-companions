@@ -1,10 +1,10 @@
 {
   "name": "coding-cli-companions",
   "owner": {
-    "name": "External CLI Companions"
+    "name": "Reederey87"
   },
   "metadata": {
-    "description": "Claude Code plugins that delegate to local coding CLIs.",
+    "description": "Codex and Grok Build companions for reviews and delegated tasks inside Claude Code CLI.",
     "version": "1.0.9"
   },
   "plugins": [
@@ -22,7 +22,7 @@
       "description": "Use a local Grok Build CLI for read-only questions, reviews, and rescue tasks.",
       "version": "0.3.0",
       "author": {
-        "name": "External CLI Companions"
+        "name": "Reederey87"
       },
       "source": "./plugins/grok"
     }
