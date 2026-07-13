@@ -15,7 +15,7 @@ Only the latest release of this fork is actively supported with security fixes.
 
 Please report suspected vulnerabilities privately using GitHub's **Report a
 vulnerability** feature on the
-[Security tab](https://github.com/Reederey87/codex-plugin-cc/security/advisories/new)
+[Security tab](https://github.com/Reederey87/claude-code-cli-companions/security/advisories/new)
 (Private Vulnerability Reporting). This creates a private security advisory
 visible only to repository maintainers.
 

@@ -1,9 +1,9 @@
 {
-  "name": "@openai/codex-plugin-cc",
+  "name": "@reederey87/claude-code-cli-companions",
   "version": "1.0.9",
   "private": true,
   "type": "module",
-  "description": "Use Codex from Claude Code to review code or delegate tasks.",
+  "description": "Claude Code CLI marketplace for Codex and Grok Build reviews, second opinions, and delegated tasks.",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18.18.0"

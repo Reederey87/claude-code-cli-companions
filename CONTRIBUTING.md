@@ -1,8 +1,8 @@
-# Contributing to Coding CLI Companions
+# Contributing to Claude Code CLI Companions
 
 First off, thanks for taking the time to contribute! 🎉
 
-This repository (`Reederey87/codex-plugin-cc`) is a **fork** of
+This repository (`Reederey87/claude-code-cli-companions`) is a **fork** of
 [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc). It ships
 the upstream Codex plugin plus a sibling **Grok Build** plugin and a few
 fork-specific changes. All contributions are welcome and merged under the
@@ -32,8 +32,8 @@ Please report unacceptable behavior to the maintainer listed there.
 ## Development Setup
 
 ```bash
-git clone https://github.com/Reederey87/codex-plugin-cc.git
-cd codex-plugin-cc
+git clone https://github.com/Reederey87/claude-code-cli-companions.git
+cd claude-code-cli-companions
 npm ci
 npm install -g @openai/codex   # required by npm run build (prebuild step)
 ```

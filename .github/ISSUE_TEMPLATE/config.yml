@@ -1,10 +1,10 @@
 blank_issues_enabled: false
 contact_links:
   - name: 🔒 Report a security vulnerability
-    url: https://github.com/Reederey87/codex-plugin-cc/security/advisories/new
+    url: https://github.com/Reederey87/claude-code-cli-companions/security/advisories/new
     about: Do not open public issues for security reports. Use GitHub Private Vulnerability Reporting.
   - name: 📖 Contributing guide
-    url: https://github.com/Reederey87/codex-plugin-cc/blob/main/CONTRIBUTING.md
+    url: https://github.com/Reederey87/claude-code-cli-companions/blob/main/CONTRIBUTING.md
     about: Read the contributing guide before opening a pull request.
   - name: 🧭 Upstream Codex issues
     url: https://github.com/openai/codex-plugin-cc/issues

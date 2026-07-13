@@ -6,8 +6,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for suggesting a feature for **Coding CLI Companions**
-        (`Reederey87/codex-plugin-cc`)!
+        Thanks for suggesting a feature for **Claude Code CLI Companions**
+        (`Reederey87/claude-code-cli-companions`)!
 
         - Features that apply to the **upstream Codex plugin** should go to
           [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc/issues).

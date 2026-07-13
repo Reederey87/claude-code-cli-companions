@@ -6,13 +6,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to file a bug report for **Coding CLI Companions**
-        (`Reederey87/codex-plugin-cc`).
+        Thanks for taking the time to file a bug report for **Claude Code CLI Companions**
+        (`Reederey87/claude-code-cli-companions`).
 
         - For bugs in the **upstream Codex CLI or plugin**, file them at
           [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc/issues) instead.
         - For **security-sensitive** issues, do **not** use this form. See
-          [SECURITY.md](https://github.com/Reederey87/codex-plugin-cc/blob/main/SECURITY.md).
+          [SECURITY.md](https://github.com/Reederey87/claude-code-cli-companions/blob/main/SECURITY.md).
   - type: dropdown
     id: plugin
     attributes:
